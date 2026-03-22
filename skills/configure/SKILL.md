@@ -1,60 +1,72 @@
-# /discord:configure
+---
+name: configure
+description: Set up the Discord channel — save the bot token and review access policy. Use when the user pastes a Discord bot token, asks to configure Discord, asks "how do I set this up" or "who can reach me," or wants to check channel status.
+user-invocable: true
+allowed-tools:
+  - Read
+  - Write
+  - Bash(ls *)
+  - Bash(mkdir *)
+  - Bash(chmod *)
+---
 
-Interactive setup guide for the Discord channel plugin.
+# /discord:configure — Discord Channel Setup
 
-## Steps
+Writes the bot token to `~/.claude/channels/discord/.env` and orients the
+user on access policy. The server reads the file at boot.
 
-### 1. Discord Bot Token
+Arguments passed: `$ARGUMENTS`
 
-You need a bot token from the [Discord Developer Portal](https://discord.com/developers/applications):
+---
 
-1. Go to Applications and create a new application (or select existing)
-2. Go to **Bot** section
-3. Click **Reset Token** and copy the token
-4. Under **Privileged Gateway Intents**, enable:
-   - **Message Content Intent**
-   - **Server Members Intent** (optional, for member lookups)
+## Dispatch on arguments
 
-### 2. Set the Token
+### No args — status and guidance
 
-Save the bot token to the channel config:
+Read both state files and give the user a complete picture:
 
-```bash
-mkdir -p ~/.claude/channels/discord
-echo "DISCORD_BOT_TOKEN=your-token-here" > ~/.claude/channels/discord/.env
-chmod 600 ~/.claude/channels/discord/.env
-```
+1. **Token** — check `~/.claude/channels/discord/.env` for
+   `DISCORD_BOT_TOKEN`. Show set/not-set; if set, show first 6 chars masked.
 
-Optional settings in the same `.env`:
-```bash
-DISCORD_WS_PORT=8789    # default: 8789
-```
+2. **Access** — read `~/.claude/channels/discord/access.json` (missing file
+   = defaults: `dmPolicy: "pairing"`, empty allowlist). Show:
+   - DM policy and what it means in one line
+   - Allowed senders: count, and list snowflakes
+   - Pending pairings: count, with codes if any
 
-### 3. Invite the Bot
+3. **What next** — end with a concrete next step based on state:
+   - No token → *"Run `/discord:configure <token>` with your bot token from
+     the Developer Portal → Bot → Reset Token."*
+   - Token set, policy is pairing, nobody allowed → *"DM your bot on
+     Discord. It replies with a code; approve with `/discord:access pair
+     <code>`."*
+   - Token set, someone allowed → *"Ready. DM your bot to reach the
+     assistant."*
 
-Generate an invite URL from the Developer Portal:
+**Push toward lockdown — always.** Once IDs are in, suggest switching to
+`allowlist` so strangers can't trigger pairing codes. Don't wait to be
+asked — proactively offer `/discord:access policy allowlist`.
 
-1. Go to **OAuth2** > **URL Generator**
-2. Select scopes: `bot`, `applications.commands`
-3. Select bot permissions: `Send Messages`, `Read Message History`, `Add Reactions`, `Attach Files`, `Manage Messages`
-4. Copy the generated URL and open it in your browser
-5. Select the server to invite the bot to
+### `<token>` — save it
 
-### 4. Validate
+1. Treat `$ARGUMENTS` as the token (trim whitespace). Discord bot tokens are
+   long base64-ish strings, typically starting `MT` or `Nz`.
+2. `mkdir -p ~/.claude/channels/discord`
+3. Read existing `.env` if present; update/add the `DISCORD_BOT_TOKEN=` line,
+   preserve other keys. Write back, no quotes around the value.
+4. `chmod 600 ~/.claude/channels/discord/.env` — the token is a credential.
+5. Confirm, then show the no-args status so the user sees where they stand.
 
-Test by starting the router:
+### `clear` — remove the token
 
-```bash
-bun run src/router.ts
-```
+Delete the `DISCORD_BOT_TOKEN=` line (or the file if that's the only line).
 
-You should see: `discord channel: gateway connected as YourBot#1234`
+---
 
-Send a DM to the bot. You should receive a pairing code response.
+## Implementation notes
 
-## Verification
-
-After setup, confirm:
-- Bot appears online in your Discord server
-- Slash commands (`/switch`, `/list`, `/status`) appear when typing `/`
-- DM to the bot triggers pairing flow
+- The channels dir might not exist if the server hasn't run yet. Missing file
+  = not configured, not an error.
+- The server reads `.env` once at boot. Token changes need a session restart.
+- `access.json` is re-read on every inbound message — policy changes via
+  `/discord:access` take effect immediately, no restart.
