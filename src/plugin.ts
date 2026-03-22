@@ -78,10 +78,16 @@ export async function connectToRouter(opts: ConnectToRouterOptions): Promise<Con
     }, 5000)
 
     ws.onopen = () => {
-      // Use grandparent PID as instanceId — this identifies the Claude Code process.
-      // Multiple MCP spawns from the same Claude Code share the same instanceId.
-      // Different Claude Code instances get different instanceIds.
-      const instanceId = String(process.ppid)
+      // Use grandparent PID (Claude Code process) as instanceId.
+      // process.ppid = bun (direct parent), we need one level higher.
+      let instanceId = String(process.ppid)
+      try {
+        const { execSync } = require('child_process')
+        const grandparentPid = execSync(`ps -p ${process.ppid} -o ppid=`).toString().trim()
+        if (grandparentPid && grandparentPid !== '0' && grandparentPid !== '1') {
+          instanceId = grandparentPid
+        }
+      } catch {}
       ws.send(JSON.stringify({ type: 'register', name, projectPath, instanceId }))
     }
 
