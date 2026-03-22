@@ -41,32 +41,35 @@ You need [Bun](https://bun.sh) and a Discord account.
 3. Enable **Message Content Intent** under Privileged Gateway Intents
 4. **OAuth2 → URL Generator** → scope: `bot` → permissions: Send Messages, Read Message History, Add Reactions, Attach Files → open the URL → add bot to a server
 
-### Install
+### Install the plugin
 
-```bash
-git clone https://github.com/YassinCh/multi-channel-discord.git
-cd multi-channel-discord
-bun install
-./deploy.sh
+In Claude Code:
+
+```
+/plugin marketplace add YassinCh/multi-channel-discord
+/plugin install discord@multi-channel-discord
 ```
 
-### Configure
-
-In any Claude Code session:
+### Configure the token
 
 ```
 /discord:configure <your-bot-token>
 ```
 
-### Run
+### Start the router
 
-Terminal 1 — start the router (leave it running):
+The router is the Discord bot. Clone the repo and run it in a persistent terminal (tmux, screen, etc.):
 
 ```bash
+git clone https://github.com/YassinCh/multi-channel-discord.git
+cd multi-channel-discord
+bun install
 bun run src/router.ts
 ```
 
-Terminal 2+ — start Claude Code in any project:
+### Launch Claude Code
+
+In any project directory:
 
 ```bash
 claude --dangerously-load-development-channels plugin:discord@multi-channel-discord
