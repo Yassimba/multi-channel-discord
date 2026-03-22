@@ -1,0 +1,6 @@
+{
+  "name": "discord",
+  "description": "Discord channel for Claude Code — receive and reply to Discord messages with multi-session routing",
+  "version": "0.0.1",
+  "keywords": ["channel", "discord", "chat"]
+}
