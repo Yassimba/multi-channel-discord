@@ -1,0 +1,18 @@
+{
+  "name": "multi-channel-discord",
+  "owner": {
+    "name": "YassinCh"
+  },
+  "metadata": {
+    "description": "Discord multi-instance channel for Claude Code — multi-session routing with slash commands"
+  },
+  "plugins": [
+    {
+      "name": "discord",
+      "source": "./",
+      "description": "Discord channel with multi-session routing — /switch, /list, /status, /kill, /broadcast, /spawn",
+      "version": "0.0.1",
+      "homepage": "https://github.com/YassinCh/multi-channel-discord"
+    }
+  ]
+}
