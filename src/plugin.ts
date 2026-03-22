@@ -269,6 +269,31 @@ export async function startPlugin(): Promise<void> {
           required: ['channel'],
         },
       },
+      {
+        name: 'ask_user',
+        description: 'Ask the Discord user a question with interactive buttons or a select menu. Use this when you need the user to choose between options. Returns the selected option. Buttons are used for 2-5 options, select menu for 6+.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            chat_id: { type: 'string', description: 'The channel ID from the inbound message' },
+            question: { type: 'string', description: 'The question to ask' },
+            options: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  label: { type: 'string', description: 'Display text for the option (max 80 chars for buttons, 100 for select)' },
+                  description: { type: 'string', description: 'Optional description (select menu only, max 100 chars)' },
+                  value: { type: 'string', description: 'Value returned when selected (max 100 chars)' },
+                },
+                required: ['label', 'value'],
+              },
+              description: 'The options to present (2-25)',
+            },
+          },
+          required: ['chat_id', 'question', 'options'],
+        },
+      },
     ],
   }))
 
@@ -299,6 +324,17 @@ export async function startPlugin(): Promise<void> {
         case 'fetch_messages': {
           const result = await sendToolRequest({ type: 'fetchMessages', channel: args.channel, limit: args.limit })
           return { content: [{ type: 'text', text: result }] }
+        }
+        case 'ask_user': {
+          const options = args.options as Array<{ label: string; description?: string; value: string }>
+          const result = await sendToolRequest({
+            type: 'askUser',
+            chatId: args.chat_id,
+            question: args.question,
+            options,
+          })
+          const selected = JSON.parse(result) as { value: string; label: string }
+          return { content: [{ type: 'text', text: `User selected: ${selected.label} (value: ${selected.value})` }] }
         }
         default:
           return { content: [{ type: 'text', text: `Unknown tool: ${req.params.name}` }], isError: true }

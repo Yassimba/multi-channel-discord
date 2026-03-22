@@ -56,6 +56,15 @@ export interface WsFetchMessages {
   limit?: number
 }
 
+/** Plugin → Router: send an interactive question with select menu or buttons */
+export interface WsAskUser {
+  type: 'askUser'
+  requestId: string
+  chatId: string
+  question: string
+  options: Array<{ label: string; description?: string; value: string }>
+}
+
 /** Plugin → Router: deregister this session */
 export interface WsDeregister {
   type: 'deregister'
@@ -70,6 +79,7 @@ export type PluginToRouterMessage =
   | WsEditMessage
   | WsDownloadAttachment
   | WsFetchMessages
+  | WsAskUser
   | WsDeregister
 
 // ============================================================

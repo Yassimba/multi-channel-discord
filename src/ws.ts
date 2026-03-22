@@ -7,7 +7,15 @@ import type { PluginToRouterMessage, WsRegistered, WsRenamed, WsError, WsToolRes
 import type { SessionManager, ProjectHistory } from './sessions.js'
 import { chunk, assertSendable } from './discord.js'
 import { noteSent, getStateDir } from './access.js'
-import type { Client, TextBasedChannel } from 'discord.js'
+import {
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ComponentType,
+  type Client,
+  type TextBasedChannel,
+} from 'discord.js'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { join, basename } from 'node:path'
 
@@ -104,6 +112,13 @@ export function createWsHandlers(deps: WsDeps): WsHandlers {
             return
           }
           handleFetchMessages(ws, parsed.requestId, parsed.channel, (parsed as { limit?: number }).limit, deps)
+          break
+        case 'askUser':
+          if (!hasString(parsed, 'requestId') || !hasString(parsed, 'chatId') || !hasString(parsed, 'question')) {
+            sendError(ws, 'askUser requires requestId, chatId, and question')
+            return
+          }
+          handleAskUser(ws, parsed.requestId, parsed.chatId, parsed.question, (parsed as any).options ?? [], deps)
           break
         default:
           sendError(ws, `Unknown message type: ${(parsed as { type: string }).type}`)
@@ -302,6 +317,119 @@ function handleFetchMessages(ws: WsLike, requestId: string, channelId: string, l
       sendToolResult(ws, requestId, true, JSON.stringify(result))
     } catch (err) {
       sendToolResult(ws, requestId, false, `Fetch failed: ${err}`)
+    }
+  })()
+}
+
+function handleAskUser(
+  ws: WsLike,
+  requestId: string,
+  chatId: string,
+  question: string,
+  options: Array<{ label: string; description?: string; value: string }>,
+  deps: WsDeps,
+): void {
+  void (async () => {
+    try {
+      const ch = await deps.client.channels.fetch(chatId)
+      if (!ch || !ch.isTextBased() || !('send' in ch)) {
+        sendToolResult(ws, requestId, false, 'Channel not found or not sendable')
+        return
+      }
+
+      const sessionName = ws.data.sessionName ?? 'unknown'
+
+      if (options.length <= 5) {
+        // Use buttons for 2-5 options (cleaner UX)
+        const row = new ActionRowBuilder<ButtonBuilder>()
+        for (const opt of options) {
+          row.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`ask_${requestId}_${opt.value}`)
+              .setLabel(opt.label.slice(0, 80))
+              .setStyle(ButtonStyle.Primary),
+          )
+        }
+
+        const sent = await ch.send({
+          content: `**[${sessionName}]** ${question}`,
+          components: [row],
+        })
+        noteSent(sent.id)
+
+        // Wait for button click (5 min timeout)
+        try {
+          const interaction = await sent.awaitMessageComponent({
+            componentType: ComponentType.Button,
+            time: 300_000,
+          })
+
+          // Find the selected option
+          const selectedValue = interaction.customId.replace(`ask_${requestId}_`, '')
+          const selectedOption = options.find(o => o.value === selectedValue)
+
+          await interaction.update({
+            content: `**[${sessionName}]** ${question}\n\n> Selected: **${selectedOption?.label ?? selectedValue}**`,
+            components: [],
+          })
+
+          sendToolResult(ws, requestId, true, JSON.stringify({
+            value: selectedValue,
+            label: selectedOption?.label ?? selectedValue,
+          }))
+        } catch {
+          // Timeout — disable buttons
+          await sent.edit({ content: `**[${sessionName}]** ${question}\n\n> *(timed out)*`, components: [] }).catch(() => {})
+          sendToolResult(ws, requestId, false, 'Selection timed out (5 min)')
+        }
+      } else {
+        // Use select menu for 6+ options
+        const select = new StringSelectMenuBuilder()
+          .setCustomId(`ask_${requestId}`)
+          .setPlaceholder('Choose an option...')
+
+        for (const opt of options.slice(0, 25)) {
+          select.addOptions({
+            label: opt.label.slice(0, 100),
+            description: opt.description?.slice(0, 100),
+            value: opt.value.slice(0, 100),
+          })
+        }
+
+        const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)
+
+        const sent = await ch.send({
+          content: `**[${sessionName}]** ${question}`,
+          components: [row],
+        })
+        noteSent(sent.id)
+
+        // Wait for selection (5 min timeout)
+        try {
+          const interaction = await sent.awaitMessageComponent({
+            componentType: ComponentType.StringSelect,
+            time: 300_000,
+          })
+
+          const selectedValue = interaction.values[0]
+          const selectedOption = options.find(o => o.value === selectedValue)
+
+          await interaction.update({
+            content: `**[${sessionName}]** ${question}\n\n> Selected: **${selectedOption?.label ?? selectedValue}**`,
+            components: [],
+          })
+
+          sendToolResult(ws, requestId, true, JSON.stringify({
+            value: selectedValue,
+            label: selectedOption?.label ?? selectedValue,
+          }))
+        } catch {
+          await sent.edit({ content: `**[${sessionName}]** ${question}\n\n> *(timed out)*`, components: [] }).catch(() => {})
+          sendToolResult(ws, requestId, false, 'Selection timed out (5 min)')
+        }
+      }
+    } catch (err) {
+      sendToolResult(ws, requestId, false, `Ask failed: ${err}`)
     }
   })()
 }
