@@ -139,3 +139,51 @@ describe('WS rename', () => {
     expect(response.newName).toBe('login-fix')
   })
 })
+
+describe('WS registerSkills', () => {
+  test('calls onSkillsRegistered callback with skills', () => {
+    const onSkills = mock((_skills: Array<{ name: string; description: string }>) => {})
+    const deps = { ...makeDeps(), onSkillsRegistered: onSkills }
+    const handlers = createWsHandlers(deps)
+    const ws = makeMockWs()
+
+    handlers.message(ws as any, JSON.stringify({
+      type: 'registerSkills',
+      skills: [
+        { name: 'commit', description: 'Write commits' },
+        { name: 'deploy', description: 'Deploy to prod' },
+      ],
+    }))
+
+    expect(onSkills).toHaveBeenCalledTimes(1)
+    const skills = onSkills.mock.calls[0]![0]
+    expect(skills).toHaveLength(2)
+    expect(skills[0].name).toBe('commit')
+    expect(skills[1].name).toBe('deploy')
+  })
+
+  test('sends error for missing skills array', () => {
+    const handlers = createWsHandlers(makeDeps())
+    const ws = makeMockWs()
+
+    handlers.message(ws as any, JSON.stringify({ type: 'registerSkills' }))
+
+    const response = JSON.parse(String(ws.send.mock.calls[0]![0]))
+    expect(response.type).toBe('error')
+    expect(response.message).toContain('skills array')
+  })
+
+  test('does not error when no callback is set', () => {
+    const handlers = createWsHandlers(makeDeps())
+    const ws = makeMockWs()
+
+    // Should not throw
+    handlers.message(ws as any, JSON.stringify({
+      type: 'registerSkills',
+      skills: [{ name: 'test', description: 'Test' }],
+    }))
+
+    // No error sent
+    expect(ws.send.mock.calls).toHaveLength(0)
+  })
+})

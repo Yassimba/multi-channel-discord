@@ -12,8 +12,8 @@ import { SessionManager, ProjectHistory } from './sessions.js'
 import { createWsHandlers, handlePermissionButton } from './ws.js'
 import type { WsData } from './ws.js'
 import { PidManager } from './pid.js'
-import { registerSlashCommands, handleSlashCommand, handleAutocomplete } from './slash-commands.js'
-import type { SlashCommandDeps } from './slash-commands.js'
+import { registerSlashCommands, handleSlashCommand, handleAutocomplete, updateSkillCommands, isSkillCommand } from './slash-commands.js'
+import type { SlashCommandDeps, SkillEntry } from './slash-commands.js'
 import { ActivityType, type Message } from 'discord.js'
 
 // Load token from ~/.claude/channels/discord/.env
@@ -139,6 +139,11 @@ const wsHandlers = createWsHandlers({
   replyToMode: access.replyToMode ?? 'first',
   onReply: (chatId: string) => stopTyping(chatId),
   onSessionChange: () => updatePresence(),
+  onSkillsRegistered: (skills: SkillEntry[]) => {
+    updateSkillCommands(client, skills).catch(err => {
+      process.stderr.write(`discord channel: skill command registration failed: ${err}\n`)
+    })
+  },
 })
 
 const wsServer = Bun.serve<WsData>({

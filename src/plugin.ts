@@ -14,7 +14,8 @@ import { z } from 'zod'
 import { readNamingContext, pickSessionName } from './naming.js'
 import { ensureRouter } from './ensure-router.js'
 import { computeBackoff } from './reconnect.js'
-import type { RouterToPluginMessage } from './types.js'
+import { discoverSkills } from './skills.js'
+import type { RouterToPluginMessage, WsRegisterSkills } from './types.js'
 
 export const CHANNEL_INSTRUCTIONS = `You are connected to Discord via the claude/channel capability.
 
@@ -189,6 +190,17 @@ export async function startPlugin(): Promise<void> {
       currentName = registeredName
       reconnectAttempt = 0
       process.stderr.write(`discord plugin: connected as "${registeredName}"\n`)
+
+      // Discover and register skills as slash commands
+      discoverSkills(cwd).then(skills => {
+        if (skills.length > 0 && ws.readyState === WebSocket.OPEN) {
+          const msg: WsRegisterSkills = { type: 'registerSkills', skills }
+          ws.send(JSON.stringify(msg))
+          process.stderr.write(`discord plugin: registered ${skills.length} skill(s)\n`)
+        }
+      }).catch(err => {
+        process.stderr.write(`discord plugin: skill discovery failed: ${err}\n`)
+      })
 
       ws.onclose = () => {
         currentWs = null

@@ -71,7 +71,7 @@ const helpCommand = new SlashCommandBuilder()
   .setName('help')
   .setDescription('Show all available commands and their descriptions')
 
-export const ALL_COMMANDS = [
+export const BUILTIN_COMMANDS = [
   switchCommand,
   listCommand,
   statusCommand,
@@ -81,24 +81,98 @@ export const ALL_COMMANDS = [
   helpCommand,
 ]
 
+/** @deprecated Use BUILTIN_COMMANDS instead */
+export const ALL_COMMANDS = BUILTIN_COMMANDS
+
+// ============================================================
+// Skill command tracking
+// ============================================================
+
+/** Names of built-in commands that cannot be overridden by skills. */
+const BUILTIN_NAMES = new Set(BUILTIN_COMMANDS.map(c => c.name))
+
+/** Max skill commands (Discord allows 100 global commands, reserve room for builtins). */
+const MAX_SKILL_COMMANDS = 90
+
+/** Currently registered skill names (for diffing on re-registration). */
+let registeredSkillNames: string[] = []
+
+export interface SkillEntry {
+  name: string
+  description: string
+}
+
+/** Build a slash command JSON payload for a skill. */
+function buildSkillCommand(skill: SkillEntry): { toJSON(): unknown } {
+  const cmd = new SlashCommandBuilder()
+    .setName(skill.name)
+    .setDescription(skill.description.slice(0, 100) || skill.name)
+    .addStringOption(opt =>
+      opt.setName('args')
+        .setDescription('Arguments to pass to the skill')
+        .setRequired(false),
+    )
+  return cmd
+}
+
 // ============================================================
 // Registration
 // ============================================================
 
-export async function registerSlashCommands(client: Client): Promise<void> {
+export async function registerSlashCommands(client: Client, skills: SkillEntry[] = []): Promise<void> {
   const token = process.env.DISCORD_BOT_TOKEN
   if (!token || !client.user) return
+
+  // Filter out skills that collide with built-in command names
+  const validSkills = skills
+    .filter(s => !BUILTIN_NAMES.has(s.name))
+    .slice(0, MAX_SKILL_COMMANDS)
+
+  const allCommands = [
+    ...BUILTIN_COMMANDS,
+    ...validSkills.map(buildSkillCommand),
+  ]
 
   const rest = new REST({ version: '10' }).setToken(token)
   try {
     await rest.put(
       Routes.applicationCommands(client.user.id),
-      { body: ALL_COMMANDS.map(c => c.toJSON()) },
+      { body: allCommands.map(c => c.toJSON()) },
     )
-    process.stderr.write(`discord channel: registered ${ALL_COMMANDS.length} slash commands\n`)
+    registeredSkillNames = validSkills.map(s => s.name)
+    process.stderr.write(`discord channel: registered ${allCommands.length} slash commands (${validSkills.length} skills)\n`)
   } catch (err) {
     process.stderr.write(`discord channel: failed to register slash commands: ${err}\n`)
   }
+}
+
+/** Re-register commands with updated skills. Only calls Discord API if skills actually changed. */
+export async function updateSkillCommands(client: Client, skills: SkillEntry[]): Promise<void> {
+  const validSkills = skills
+    .filter(s => !BUILTIN_NAMES.has(s.name))
+    .slice(0, MAX_SKILL_COMMANDS)
+
+  const newNames = validSkills.map(s => s.name).sort().join(',')
+  const oldNames = [...registeredSkillNames].sort().join(',')
+
+  if (newNames === oldNames) return
+
+  await registerSlashCommands(client, validSkills)
+}
+
+/** Check if a command name is a registered skill. */
+export function isSkillCommand(name: string): boolean {
+  return registeredSkillNames.includes(name)
+}
+
+/** Get currently registered skill names. */
+export function getRegisteredSkills(): readonly string[] {
+  return registeredSkillNames
+}
+
+/** Set registered skill names directly (for testing). */
+export function _setRegisteredSkillsForTest(names: string[]): void {
+  registeredSkillNames = names
 }
 
 // ============================================================
@@ -169,6 +243,10 @@ export async function handleSlashCommand(
     case 'spawn': return handleSpawn(interaction, deps)
     case 'help': return handleHelp(interaction)
     default:
+      // Check if it's a skill command
+      if (isSkillCommand(interaction.commandName)) {
+        return handleSkillInvocation(interaction, deps)
+      }
       await interaction.reply({ content: `Unknown command: /${interaction.commandName}`, ephemeral: true })
   }
 }
@@ -366,6 +444,38 @@ async function handleHelp(
     .setFooter({ text: 'Messages sent in this DM are forwarded to the active Claude Code session.' })
 
   await interaction.reply({ embeds: [embed], ephemeral: true })
+}
+
+// ============================================================
+// Skill invocation
+// ============================================================
+
+async function handleSkillInvocation(
+  interaction: ChatInputCommandInteraction,
+  deps: SlashCommandDeps,
+): Promise<void> {
+  const skillName = interaction.commandName
+  const args = interaction.options.getString('args') ?? ''
+  const content = args ? `/${skillName} ${args}` : `/${skillName}`
+
+  const sessions = deps.sessions.getSessions()
+  if (sessions.length === 0) {
+    await interaction.reply({ content: 'No sessions connected. Connect Claude Code first.', ephemeral: true })
+    return
+  }
+
+  const routed = deps.sessions.routeToActive(content, {
+    type: 'skill',
+    chat_id: interaction.channelId,
+    user: interaction.user.username,
+    user_id: interaction.user.id,
+  })
+
+  if (routed) {
+    await interaction.reply({ content: `Running \`/${skillName}${args ? ` ${args}` : ''}\`...`, ephemeral: true })
+  } else {
+    await interaction.reply({ content: 'No active session. Use `/switch` to activate a session first.', ephemeral: true })
+  }
 }
 
 // ============================================================

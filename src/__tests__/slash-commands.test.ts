@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
-import { handleSlashCommand, handleAutocomplete, spawnCad } from '../slash-commands.js'
+import { handleSlashCommand, handleAutocomplete, spawnCad, isSkillCommand, _setRegisteredSkillsForTest } from '../slash-commands.js'
 import type { SlashCommandDeps } from '../slash-commands.js'
 import { SessionManager, ProjectHistory } from '../sessions.js'
 import { mkdtemp } from 'node:fs/promises'
@@ -8,6 +8,8 @@ import { join } from 'node:path'
 
 interface MockInteraction {
   commandName: string
+  channelId: string
+  user: { username: string; id: string }
   options: {
     getString: ReturnType<typeof mock>
     getNumber: ReturnType<typeof mock>
@@ -18,6 +20,8 @@ interface MockInteraction {
 function makeMockInteraction(commandName: string, opts: Record<string, string | number | null> = {}): MockInteraction {
   return {
     commandName,
+    channelId: '999888777',
+    user: { username: 'testuser', id: '12345' },
     options: {
       getString: mock((name: string, _required?: boolean) => opts[name] ?? null) as any,
       getNumber: mock((name: string) => opts[name] ?? null) as any,
@@ -333,5 +337,95 @@ describe('autocomplete', () => {
 
     const choices = interaction.respond.mock.calls[0]![0] as unknown[]
     expect(choices).toHaveLength(0)
+  })
+})
+
+describe('isSkillCommand', () => {
+  test('returns false for unknown command', () => {
+    _setRegisteredSkillsForTest([])
+    expect(isSkillCommand('unknown')).toBe(false)
+  })
+
+  test('returns true for registered skill', () => {
+    _setRegisteredSkillsForTest(['commit', 'deploy'])
+    expect(isSkillCommand('commit')).toBe(true)
+    expect(isSkillCommand('deploy')).toBe(true)
+  })
+
+  test('returns false for unregistered skill', () => {
+    _setRegisteredSkillsForTest(['commit'])
+    expect(isSkillCommand('deploy')).toBe(false)
+  })
+})
+
+describe('skill invocation via slash command', () => {
+  beforeEach(() => {
+    _setRegisteredSkillsForTest(['commit', 'deploy'])
+  })
+
+  test('routes skill command to active session', async () => {
+    const send = mock((_msg: string) => {})
+    sessions.registerSession(send, 'web', '/path')
+    sessions.setActive('web')
+
+    const interaction = makeMockInteraction('commit', { args: 'fix the bug' })
+    await handleSlashCommand(interaction as any, deps)
+
+    const reply = lastReply(interaction)
+    expect(reply.ephemeral).toBe(true)
+    expect(reply.content).toContain('/commit')
+    expect(reply.content).toContain('fix the bug')
+
+    // Verify message was routed
+    expect(send).toHaveBeenCalled()
+    const sent = JSON.parse(send.mock.calls[0]![0] as string)
+    expect(sent.type).toBe('message')
+    expect(sent.content).toBe('/commit fix the bug')
+    expect(sent.meta.type).toBe('skill')
+  })
+
+  test('routes skill command without args', async () => {
+    const send = mock((_msg: string) => {})
+    sessions.registerSession(send, 'web', '/path')
+    sessions.setActive('web')
+
+    const interaction = makeMockInteraction('deploy')
+    await handleSlashCommand(interaction as any, deps)
+
+    const reply = lastReply(interaction)
+    expect(reply.content).toContain('/deploy')
+
+    const sent = JSON.parse(send.mock.calls[0]![0] as string)
+    expect(sent.content).toBe('/deploy')
+  })
+
+  test('returns error when no sessions connected', async () => {
+    const interaction = makeMockInteraction('commit')
+    await handleSlashCommand(interaction as any, deps)
+
+    const reply = lastReply(interaction)
+    expect(reply.ephemeral).toBe(true)
+    expect(reply.content).toContain('No sessions connected')
+  })
+
+  test('returns error when no active session', async () => {
+    sessions.registerSession(mock(() => {}), 'web', '/path')
+    // Don't set active
+
+    const interaction = makeMockInteraction('commit')
+    await handleSlashCommand(interaction as any, deps)
+
+    const reply = lastReply(interaction)
+    expect(reply.ephemeral).toBe(true)
+    expect(reply.content).toContain('No active session')
+  })
+
+  test('unregistered skill falls through to unknown command', async () => {
+    _setRegisteredSkillsForTest([])
+    const interaction = makeMockInteraction('nonexistent')
+    await handleSlashCommand(interaction as any, deps)
+
+    const reply = lastReply(interaction)
+    expect(reply.content).toContain('Unknown command')
   })
 })

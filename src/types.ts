@@ -70,6 +70,12 @@ export interface WsDeregister {
   type: 'deregister'
 }
 
+/** Plugin → Router: register discovered skills as slash commands */
+export interface WsRegisterSkills {
+  type: 'registerSkills'
+  skills: Array<{ name: string; description: string }>
+}
+
 /** Plugin → Router: forward a permission prompt from Claude Code */
 export interface WsPermissionRequest {
   type: 'permissionRequest'
@@ -91,6 +97,7 @@ export type PluginToRouterMessage =
   | WsAskUser
   | WsDeregister
   | WsPermissionRequest
+  | WsRegisterSkills
 
 // ============================================================
 // Router → Plugin messages

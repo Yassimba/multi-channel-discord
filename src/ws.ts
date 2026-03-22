@@ -34,6 +34,7 @@ export interface WsDeps {
   stateDir?: string
   onReply?: (chatId: string) => void
   onSessionChange?: () => void
+  onSkillsRegistered?: (skills: Array<{ name: string; description: string }>) => void
 }
 
 interface WsLike {
@@ -128,6 +129,13 @@ export function createWsHandlers(deps: WsDeps): WsHandlers {
             return
           }
           handlePermissionRequest(ws, parsed.requestId, parsed.toolName, parsed.description, parsed.inputPreview, deps)
+          break
+        case 'registerSkills':
+          if (!Array.isArray((parsed as any).skills)) {
+            sendError(ws, 'registerSkills requires skills array')
+            return
+          }
+          deps.onSkillsRegistered?.((parsed as any).skills)
           break
         default:
           sendError(ws, `Unknown message type: ${(parsed as { type: string }).type}`)
