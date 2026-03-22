@@ -342,10 +342,16 @@ async function handleSpawn(
 
 export function spawnCad(dir: string): void {
   try {
-    Bun.spawn(['cad'], {
+    const { spawn } = require('child_process')
+    const child = spawn('cad', ['--channels', 'plugin:discord@claude-plugins-official'], {
       cwd: dir,
-      stdio: ['ignore', 'ignore', 'ignore'],
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env },
+      shell: true,
     })
+    child.unref()
+    process.stderr.write(`discord channel: spawned cad in ${dir}\n`)
   } catch (err) {
     process.stderr.write(`discord channel: failed to spawn cad: ${err}\n`)
   }
