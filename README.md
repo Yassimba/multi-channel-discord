@@ -1,215 +1,161 @@
-# Discord Multi-Instance Channel for Claude Code
+# multi-channel-discord
 
-Connect multiple Claude Code sessions to a single Discord bot. Switch between them with slash commands, broadcast to all, buffer messages from inactive sessions, and spawn new instances — all from your phone.
+Run multiple Claude Code sessions behind one Discord bot. Switch between projects, approve tool calls, and monitor progress — from your phone.
 
-Built on top of Anthropic's [Claude Code Channels](https://code.claude.com/docs/en/channels) protocol. Extends the [official single-instance plugin](https://github.com/anthropics/claude-plugins-official/tree/main/external_plugins/discord) with a router that manages multiple sessions.
+```
+You: /switch frontend
+You: fix the login bug
+[frontend] Reading auth.ts...          ← typing indicator stays active
+[frontend] Found the issue — ...       ← Claude replies in Discord
 
-## Why?
+[backend 📪] 1 new message             ← backend finished while you were away
+You: /switch backend                   ← flushes the buffered reply
+```
 
-The official Discord plugin connects **one** Claude Code session to your bot. If you're working across multiple projects, you have to restart Claude Code each time.
+## What it does
 
-This plugin runs a **router** that sits between Discord and your sessions. Multiple Claude Code instances connect to the router via WebSocket, and you switch between them with `/switch` — no restarts, no lost context.
+Anthropic's official Discord plugin connects one Claude Code session per bot. This fork adds a **router** between Discord and your sessions, so you can run as many as you want simultaneously.
 
-## Prerequisites
+**Session management** — `/switch`, `/list`, `/kill`, `/broadcast`, `/spawn` as native Discord slash commands with autocomplete. Sessions auto-name from your git branch.
 
-- [Bun](https://bun.sh) — install with `curl -fsSL https://bun.sh/install | bash`
-- A Discord account
+**Permission relay** — Claude needs to run a command? You get yes/no buttons in Discord. Tap to approve from your phone without touching the terminal.
 
-## Quick Setup
+**Interactive questions** — When Claude needs your input, it sends Discord buttons or select menus instead of walls of text. Pick an option by tapping.
 
-### 1. Create a Discord bot
+**Skill discovery** — Your Claude Code skills (`/commit`, `/deploy`, etc.) auto-register as Discord slash commands. Type `/` and they're all there.
 
-Go to the [Discord Developer Portal](https://discord.com/developers/applications) and click **New Application**. Name it whatever you want.
+**Live progress** — Bot shows a typing indicator while Claude works. Progress updates edit a single message instead of spamming new ones.
 
-Navigate to **Bot** in the sidebar. Give your bot a username.
+**Bot presence** — Discord status shows what session is active and how many are connected.
 
-Scroll down to **Privileged Gateway Intents** and enable **Message Content Intent** — without this the bot receives messages with empty content.
+**Buffering** — Replies from inactive sessions are queued and flushed when you switch back. Nothing gets lost.
 
-### 2. Generate a bot token
+## Setup
 
-Still on the **Bot** page, scroll up and press **Reset Token**. Copy the token — it's only shown once.
+You need [Bun](https://bun.sh) and a Discord account.
 
-### 3. Invite the bot to a server
+### Create the bot
 
-Discord won't let you DM a bot unless you share a server with it.
+1. [Discord Developer Portal](https://discord.com/developers/applications) → New Application
+2. **Bot** → give it a username → **Reset Token** → copy it (shown once)
+3. Enable **Message Content Intent** under Privileged Gateway Intents
+4. **OAuth2 → URL Generator** → scope: `bot` → permissions: Send Messages, Read Message History, Add Reactions, Attach Files → open the URL → add bot to a server
 
-Navigate to **OAuth2 → URL Generator**. Select the `bot` scope. Under **Bot Permissions**, enable:
-
-- View Channels
-- Send Messages
-- Send Messages in Threads
-- Read Message History
-- Attach Files
-- Add Reactions
-
-Copy the **Generated URL**, open it, and add the bot to any server you're in.
-
-### 4. Install the plugin
-
-Clone this repo and install dependencies:
+### Install
 
 ```bash
 git clone https://github.com/YassinCh/multi-channel-discord.git
 cd multi-channel-discord
 bun install
-```
-
-Deploy to Claude Code's plugin cache:
-
-```bash
 ./deploy.sh
 ```
 
-### 5. Save the bot token
+### Configure
 
-Start a Claude Code session and configure the token:
+In any Claude Code session:
 
 ```
-/discord:configure <your-token>
+/discord:configure <your-bot-token>
 ```
 
-This writes `DISCORD_BOT_TOKEN=...` to `~/.claude/channels/discord/.env`. You can also write that file by hand.
+### Run
 
-### 6. Start the router
-
-The router is the Discord bot process. Start it in a terminal and leave it running:
+Terminal 1 — start the router (leave it running):
 
 ```bash
-cd multi-channel-discord
 bun run src/router.ts
 ```
 
-You should see:
-```
-discord channel: WS server listening on port 8789
-discord channel: gateway connected as YourBot#1234
-discord channel: registered 6 slash commands
-```
-
-> **Tip:** Run this in a tmux/screen session or as a background service so it survives terminal closes.
-
-### 7. Launch Claude Code with channels
-
-In any project directory:
+Terminal 2+ — start Claude Code in any project:
 
 ```bash
 claude --dangerously-load-development-channels plugin:discord@multi-channel-discord
 ```
 
-The session auto-registers with the router using your git branch or project name.
+### Pair
 
-### 8. Pair
+DM your bot → it replies with a code → run `/discord:access pair <code>` in Claude Code → done.
 
-DM your bot on Discord — it replies with a pairing code. In your Claude Code session:
+Then lock it down: `/discord:access policy allowlist`
 
-```
-/discord:access pair <code>
-```
+## Commands
 
-Your next DM reaches Claude.
+Discord slash commands (ephemeral responses, only you see them):
 
-### 9. Lock it down
+| Command | What it does |
+|---------|-------------|
+| `/switch <session>` | Activate a session. Autocompletes names. Flushes buffered messages. |
+| `/list` | All sessions with status — active, idle, or N buffered. |
+| `/status` | Router uptime, instance count, queued messages. |
+| `/kill <session\|all>` | Terminate sessions. |
+| `/broadcast <msg>` | Send to every connected session. |
+| `/spawn <project>` | Launch Claude Code in a recent project directory. |
+| `/help` | Show all commands. |
+| `/<skill> [args]` | Any of your Claude Code skills — auto-discovered and registered. |
 
-Pairing is for capturing your Discord user ID. Once you're in, switch to `allowlist` so strangers can't trigger pairing codes:
+Claude Code terminal commands (not Discord):
 
-```
-/discord:access policy allowlist
-```
+| Command | What it does |
+|---------|-------------|
+| `/discord:configure` | Save bot token, check status. |
+| `/discord:access` | Manage pairing, allowlists, DM policy. |
 
-## Usage
-
-### Slash commands
-
-All commands work in DMs with the bot. Responses are ephemeral (only you see them).
-
-| Command | Description |
-| --- | --- |
-| `/switch <session>` | Switch the active session. Autocompletes session names. Flushes buffered messages. |
-| `/list` | Show all connected sessions with status (active, buffered, idle). |
-| `/status` | Show router uptime, instance count, and queued messages. |
-| `/kill <session>` | Terminate a session. Use `/kill all` to terminate all. |
-| `/broadcast <message>` | Send a message to all connected sessions. |
-| `/spawn <project>` | Launch a new Claude Code instance in a recent project. |
-
-### Multi-session workflow
+## How it works
 
 ```
-You: /switch frontend        → "Switched to frontend"
-You: fix the CSS bug          → routes to frontend session
-You: /switch backend          → "Switched to backend"
-You: add the API endpoint     → routes to backend session
-
-[frontend 📪] 1 new message   → frontend replied while inactive
-You: /switch frontend         → flushes buffered reply
+Discord DM ──→ Router (bot + WS server) ──→ Active session's Claude Code
+                  │
+                  ├── Session: feature/login   (Claude Code instance)
+                  ├── Session: backend-api      (Claude Code instance)
+                  └── Session: infra            (Claude Code instance)
 ```
 
-### Session naming
+The **router** runs the Discord bot, handles access control, manages sessions, and owns all Discord API calls. Each Claude Code instance runs a **plugin** that connects to the router via WebSocket. The plugin exposes tools to Claude (reply, react, edit, fetch, ask) but never talks to Discord directly.
 
-Sessions are automatically named from:
-1. Git branch (if not `main`/`master`/`develop`)
-2. `package.json` name
-3. Directory name
+Sessions are named from your git branch, `package.json` name, or directory. Collisions get suffixes (`frontend`, `frontend-2`).
 
-Name collisions are resolved with suffixes: `frontend`, `frontend-2`, `frontend-3`.
+## Tools
 
-## Tools exposed to the assistant
+These are MCP tools Claude can call when responding to Discord messages:
 
 | Tool | Purpose |
-| --- | --- |
-| `reply` | Send a message to Discord. Supports `reply_to` for threading and `files` for attachments (max 10 files, 25MB each). Auto-chunks at 2000 chars. |
-| `react` | Add an emoji reaction to a message. |
-| `edit_message` | Edit a previously sent message. Useful for progress updates. |
-| `fetch_messages` | Pull recent history from a channel (max 100). |
-| `download_attachment` | Download attachments from a message to `~/.claude/channels/discord/inbox/`. |
+|------|---------|
+| `reply` | Send a message. Supports threading (`reply_to`), file attachments, auto-chunking. |
+| `react` | Emoji reaction on a message. |
+| `edit_message` | Update a sent message in-place (progress updates). |
+| `fetch_messages` | Read channel history (max 100 messages). |
+| `download_attachment` | Save attachments to local inbox. |
+| `ask_user` | Send buttons or select menu, wait for user's choice. |
 
 ## Access control
 
-See `/discord:access` for full management. Quick reference:
+Default policy is `pairing` — unknown senders get a code to approve. Switch to `allowlist` after setup.
 
 ```
-/discord:access                    # show current status
-/discord:access pair <code>        # approve a pairing
-/discord:access allow <userId>     # add a user by ID
-/discord:access remove <userId>    # remove a user
-/discord:access policy allowlist   # lock down (recommended)
-/discord:access policy pairing     # re-enable pairing temporarily
+/discord:access                    # status
+/discord:access pair <code>        # approve someone
+/discord:access allow <id>         # add by user ID
+/discord:access remove <id>        # remove
+/discord:access policy allowlist   # recommended after setup
 ```
 
-IDs are Discord **snowflakes** (numeric). Enable Developer Mode (User Settings → Advanced), then right-click any user → Copy User ID.
-
-## Architecture
-
-```
-Discord ←→ Router (Discord bot + WS server)
-              ├─ Session: frontend (Claude Code instance)
-              ├─ Session: backend  (Claude Code instance)
-              └─ Session: devops   (Claude Code instance)
-```
-
-- **Router** (`src/router.ts`): Discord bot that receives DMs, runs access control, routes messages to the active session, handles slash commands, and buffers replies from inactive sessions.
-- **Plugin** (`src/plugin.ts`): MCP server that runs inside each Claude Code instance. Connects to the router via WebSocket. Exposes reply/react/edit/download/fetch tools to Claude.
-
-The router and plugins communicate over a WebSocket protocol. The plugin is Discord-unaware — all Discord API calls happen in the router.
+Details in [ACCESS.md](./ACCESS.md).
 
 ## Updating
 
-After code changes:
-
 ```bash
-./deploy.sh
+./deploy.sh    # rebuilds and deploys to Claude Code's plugin cache
 ```
 
-Then restart your Claude Code sessions. The router can stay running.
-
-If Claude Code re-syncs the marketplace and overwrites the cache, run `./deploy.sh` again.
+Restart Claude Code sessions after deploying. The router can stay running.
 
 ## Development
 
 ```bash
-bun test          # 73 tests
-bun run check     # TypeScript type checking
+bun test       # 100 tests
+bun run check  # type checking
 ```
 
 ## License
 
-Apache-2.0 — forked from [Anthropic's official Discord plugin](https://github.com/anthropics/claude-plugins-official).
+Apache-2.0. Forked from [Anthropic's official Discord plugin](https://github.com/anthropics/claude-plugins-official).
