@@ -121,7 +121,9 @@ const slashDeps: SlashCommandDeps = {
 // ============================================================
 
 async function handleInbound(msg: Message): Promise<void> {
+  process.stderr.write(`discord: inbound from ${msg.author.username}: "${msg.content.slice(0, 50)}" action=`)
   const result = await gate(msg)
+  process.stderr.write(`${result.action}\n`)
 
   if (result.action === 'drop') return
 
@@ -169,7 +171,10 @@ async function handleInbound(msg: Message): Promise<void> {
     ...(atts.length > 0 ? { attachment_count: String(atts.length), attachments: atts.join('; ') } : {}),
   }
 
+  const activeSession = sessions.getActive()
+  process.stderr.write(`discord: routing to active="${activeSession}" sessions=${sessions.getSessions().map(s=>s.name).join(',')}\n`)
   const routed = sessions.routeToActive(content, meta)
+  process.stderr.write(`discord: routed=${routed}\n`)
   if (!routed) {
     try {
       await msg.reply('No active session. Connect Claude Code with this plugin, or use `/switch` to activate a session.')

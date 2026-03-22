@@ -1,16 +1,32 @@
 #!/bin/bash
 # Deploy the multi-instance Discord plugin to Claude Code's plugin cache.
-# Run this after Anthropic updates their plugin, or after making changes.
+# Run this after making changes or if Claude Code re-syncs the marketplace.
+#
+# Usage:
+#   ./deploy.sh
+#
+# Then restart any 'cad --dangerously-load-development-channels plugin:discord@multi-channel-discord' sessions.
 
 set -e
-CACHE_DIR="$HOME/.claude/plugins/cache/claude-plugins-official/discord/0.0.1"
+CACHE_DIR="$HOME/.claude/plugins/cache/multi-channel-discord/discord/0.0.1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "Building plugin bundle..."
 cd "$SCRIPT_DIR"
 bun build src/plugin.ts --target=bun --outfile="$CACHE_DIR/server.ts"
 
-echo "Updating package.json..."
+echo "Updating config files..."
+cat > "$CACHE_DIR/.mcp.json" << 'EOF'
+{
+  "mcpServers": {
+    "discord": {
+      "command": "bun",
+      "args": ["run", "--cwd", "${CLAUDE_PLUGIN_ROOT}", "--shell=bun", "--silent", "start"]
+    }
+  }
+}
+EOF
+
 cat > "$CACHE_DIR/package.json" << 'EOF'
 {
   "name": "claude-channel-discord",
@@ -29,4 +45,7 @@ cat > "$CACHE_DIR/package.json" << 'EOF'
 EOF
 
 echo "Deployed to: $CACHE_DIR"
-echo "Kill any running 'cad --channels' sessions and restart them."
+echo ""
+echo "To use:"
+echo "  1. Start the router:  bun run $SCRIPT_DIR/src/router.ts"
+echo "  2. Start Claude Code: cad --dangerously-load-development-channels plugin:discord@multi-channel-discord"
