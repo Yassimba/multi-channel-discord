@@ -78,7 +78,11 @@ export async function connectToRouter(opts: ConnectToRouterOptions): Promise<Con
     }, 5000)
 
     ws.onopen = () => {
-      ws.send(JSON.stringify({ type: 'register', name, projectPath }))
+      // Use grandparent PID as instanceId — this identifies the Claude Code process.
+      // Multiple MCP spawns from the same Claude Code share the same instanceId.
+      // Different Claude Code instances get different instanceIds.
+      const instanceId = String(process.ppid)
+      ws.send(JSON.stringify({ type: 'register', name, projectPath, instanceId }))
     }
 
     ws.onmessage = (event) => {

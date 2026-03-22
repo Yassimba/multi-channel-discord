@@ -19,6 +19,9 @@ export interface WsRegister {
   readonly type: 'register'
   readonly name: string
   readonly projectPath: string
+  /** Parent PID of the Claude Code process. Used to dedup multiple MCP spawns
+   *  from the same instance while keeping separate instances as separate sessions. */
+  readonly instanceId?: string
 }
 
 /** Plugin → Router: rename this session */

@@ -12,6 +12,7 @@ import { getStateDir } from './access.js'
 interface SessionSlot {
   readonly name: string
   readonly projectPath: string
+  readonly instanceId: string
   readonly connectedAt: number
   messageCount: number
   readonly send: (msg: string) => void
@@ -26,14 +27,18 @@ export class SessionManager {
   private buffers = new Map<string, BufferedMessage[]>()
 
   /** Register a session. Returns the actual name (may differ due to collision suffix).
-   *  If a session with the same projectPath already exists, adds this send callback
-   *  to a list so ALL plugin instances for the same project receive messages. */
-  registerSession(send: (msg: string) => void, name: string, projectPath: string): string {
-    // Deduplicate: if same project is already registered, add send callback to existing
-    for (const [existingName, slot] of this.sessions) {
-      if (slot.projectPath === projectPath) {
-        slot.extraSends.push(send)
-        return existingName
+   *  If a session with the same instanceId already exists, adds this send callback
+   *  to extraSends (dedup for multiple MCP spawns from the same Claude Code process).
+   *  Different Claude Code instances on the same project get separate sessions with collision suffixes. */
+  registerSession(send: (msg: string) => void, name: string, projectPath: string, instanceId?: string): string {
+    // Deduplicate: if same instanceId is already registered, add send callback to existing.
+    // This handles Claude Code spawning multiple MCP plugin processes for one session.
+    if (instanceId) {
+      for (const [existingName, slot] of this.sessions) {
+        if (slot.instanceId === instanceId) {
+          slot.extraSends.push(send)
+          return existingName
+        }
       }
     }
 
@@ -41,6 +46,7 @@ export class SessionManager {
     this.sessions.set(actualName, {
       name: actualName,
       projectPath,
+      instanceId: instanceId ?? `anon-${Date.now()}`,
       connectedAt: Date.now(),
       messageCount: 0,
       send,

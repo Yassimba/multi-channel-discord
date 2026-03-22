@@ -128,7 +128,7 @@ function dispatchMessage(ws: WsLike, parsed: PluginToRouterMessage, deps: Readon
         sendError(ws, 'register requires name and projectPath')
         return
       }
-      handleRegister(ws, parsed.name, parsed.projectPath, deps)
+      handleRegister(ws, parsed.name, parsed.projectPath, (parsed as { instanceId?: string }).instanceId, deps)
       break
     case 'deregister':
       handleDeregister(ws, deps)
@@ -201,12 +201,13 @@ function dispatchMessage(ws: WsLike, parsed: PluginToRouterMessage, deps: Readon
   }
 }
 
-function handleRegister(ws: WsLike, name: string, projectPath: string, deps: Readonly<WsDeps>): void {
+function handleRegister(ws: WsLike, name: string, projectPath: string, instanceId: string | undefined, deps: Readonly<WsDeps>): void {
   const sendCb = (msg: string) => ws.send(msg)
   const actualName = deps.sessions.registerSession(
     sendCb,
     name,
     projectPath,
+    instanceId,
   )
   ws.data.sessionName = actualName
   ws.data.sendCallback = sendCb
