@@ -1,14 +1,30 @@
 {
-  "name": "claude-channel-for-discord",
-  "version": "0.0.1",
+  "name": "multi-channel-discord",
+  "version": "0.1.0",
+  "description": "Multi-instance Discord channel for Claude Code — run multiple sessions behind one bot",
   "license": "Apache-2.0",
   "type": "module",
+  "bin": {
+    "multi-channel-discord": "./bin/multi-channel-discord.js"
+  },
   "scripts": {
     "start": "bun run src/router.ts",
     "plugin": "bun run src/plugin.ts",
     "check": "bun x tsc --noEmit",
     "test": "bun test"
   },
+  "keywords": [
+    "claude-code",
+    "discord",
+    "mcp",
+    "channel",
+    "multi-instance"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YassinCh/multi-channel-discord"
+  },
+  "author": "YassinCh",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "discord.js": "^14.14.0"

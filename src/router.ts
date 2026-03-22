@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 /**
  * Router — Discord bot + WS server + multi-session coordinator.
  *

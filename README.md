@@ -58,17 +58,13 @@ In Claude Code:
 
 ### Start the router
 
-The router is the Discord bot process. Start it from Claude Code:
-
-```
-/discord:start-router
-```
-
-Or run it manually in a terminal you'll leave open:
+The router is the Discord bot. Run it in a terminal you'll leave open:
 
 ```bash
-bun run ~/.claude/plugins/cache/multi-channel-discord/discord/*/src/router.ts
+bunx multi-channel-discord
 ```
+
+Or from Claude Code: `/discord:start-router`
 
 ### Launch Claude Code
 
