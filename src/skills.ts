@@ -45,7 +45,8 @@ export function parseFrontmatter(content: string): SkillInfo | null {
   }
 
   if (!fields['name']) return null
-  if (fields['user-invocable'] !== 'true') return null
+  // Include skills that are explicitly user-invocable OR don't specify (default to invocable)
+  if (fields['user-invocable'] === 'false') return null
 
   return {
     name: fields['name'],
