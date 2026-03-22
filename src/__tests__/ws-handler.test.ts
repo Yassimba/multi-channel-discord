@@ -13,7 +13,7 @@ interface MockWs {
 
 function makeMockWs(): MockWs {
   return {
-    data: { sessionName: null },
+    data: { sessionName: null, sendCallback: null },
     send: mock((_msg: string) => {}),
   }
 }

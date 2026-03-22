@@ -1,6 +1,18 @@
 /**
  * WebSocket message handlers for the router's plugin-facing WS server.
- * Handles registration, reply, react, rename, deregister.
+ *
+ * Message types handled by dispatchMessage():
+ *   register           → handleRegister       — register a new session
+ *   deregister         → handleDeregister      — remove a session
+ *   rename             → handleRename          — rename a session
+ *   reply              → handleReply           — send a message to Discord
+ *   react              → handleReact           — add emoji reaction
+ *   editMessage        → handleEditMessage     — edit a previously sent message
+ *   downloadAttachment → handleDownloadAttachment — download attachments from a message
+ *   fetchMessages      → handleFetchMessages   — fetch recent channel messages
+ *   askUser            → handleAskUser         — interactive question with buttons/select
+ *   permissionRequest  → handlePermissionRequest — forward permission prompt to Discord
+ *   registerSkills     → (inline)              — register discovered skills as slash commands
  */
 
 import type { PluginToRouterMessage, WsRegistered, WsRenamed, WsError, WsToolResult, WsPermissionVerdict, WsAskUser, WsRegisterSkills, ChannelMeta } from './types.js'
@@ -21,6 +33,8 @@ import { join, basename } from 'node:path'
 
 export interface WsData {
   sessionName: string | null
+  /** The send callback registered with SessionManager, kept for cleanup on close. */
+  sendCallback: ((msg: string) => void) | null
 }
 
 export interface WsDeps {
@@ -74,11 +88,33 @@ export function createWsHandlers(deps: Readonly<WsDeps>): WsHandlers {
     },
 
     close(ws: WsLike): void {
+      // Clean up any pending permission requests associated with this WS
+      for (const [reqId, reqWs] of permissionSessions) {
+        if (reqWs === ws) {
+          permissionSessions.delete(reqId)
+          const t = permissionTimeouts.get(reqId)
+          if (t) { clearTimeout(t); permissionTimeouts.delete(reqId) }
+        }
+      }
+
       if (ws.data.sessionName) {
-        try {
-          deps.sessions.deregisterSession(ws.data.sessionName)
-        } catch {}
+        const isPrimary = ws.data.sendCallback
+          ? deps.sessions.isPrimarySender(ws.data.sessionName, ws.data.sendCallback)
+          : true
+
+        if (ws.data.sendCallback) {
+          deps.sessions.cleanupSender(ws.data.sendCallback)
+        }
+
+        // Only deregister the session if this WS is the primary sender.
+        // Duplicate connections (extraSends) just remove their callback.
+        if (isPrimary) {
+          try {
+            deps.sessions.deregisterSession(ws.data.sessionName)
+          } catch {}
+        }
         ws.data.sessionName = null
+        ws.data.sendCallback = null
         deps.onSessionChange?.()
       }
     },
@@ -166,12 +202,14 @@ function dispatchMessage(ws: WsLike, parsed: PluginToRouterMessage, deps: Readon
 }
 
 function handleRegister(ws: WsLike, name: string, projectPath: string, deps: Readonly<WsDeps>): void {
+  const sendCb = (msg: string) => ws.send(msg)
   const actualName = deps.sessions.registerSession(
-    (msg: string) => ws.send(msg),
+    sendCb,
     name,
     projectPath,
   )
   ws.data.sessionName = actualName
+  ws.data.sendCallback = sendCb
   deps.history.record(actualName, projectPath)
 
   const response: WsRegistered = { type: 'registered', name: actualName }
@@ -251,8 +289,8 @@ function sendToDiscord(client: Client, chatId: string, text: string, replyTo?: s
   // Fire-and-forget: send to Discord asynchronously without blocking the caller
   void (async () => {
     try {
-      const ch = await client.channels.fetch(chatId)
-      if (!ch || !ch.isTextBased() || !('send' in ch)) return
+      const ch = await fetchTextChannelOrNull(client, chatId)
+      if (!ch || !('send' in ch)) return
 
       // Validate files
       const validFiles: string[] = []
@@ -371,8 +409,8 @@ function handleAskUser(
   // Fire-and-forget: ask user asynchronously via Discord components and report result via WS tool result
   void (async () => {
     try {
-      const ch = await deps.client.channels.fetch(chatId)
-      if (!ch || !ch.isTextBased() || !('send' in ch)) {
+      const ch = await fetchTextChannelOrNull(deps.client, chatId)
+      if (!ch || !('send' in ch)) {
         sendToolResult(ws, requestId, false, 'Channel not found or not sendable')
         return
       }
@@ -494,6 +532,9 @@ async function askWithSelectMenu(
 /** Map of permission request ID → WS connection that sent it, so we can route verdicts back. */
 const permissionSessions = new Map<string, WsLike>()
 
+/** Map of permission request ID → cleanup timer, auto-removes stale entries after 5 minutes. */
+const permissionTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
+
 function handlePermissionRequest(
   ws: WsLike,
   requestId: string,
@@ -510,11 +551,18 @@ function handlePermissionRequest(
   // Store the WS so we can route the verdict back
   permissionSessions.set(requestId, ws)
 
+  // Auto-cleanup after 5 minutes if no verdict is received
+  const timeout = setTimeout(() => {
+    permissionSessions.delete(requestId)
+    permissionTimeouts.delete(requestId)
+  }, 300_000)
+  permissionTimeouts.set(requestId, timeout)
+
   // Fire-and-forget: send permission prompt to Discord asynchronously
   void (async () => {
     try {
-      const ch = await deps.client.channels.fetch(chatId)
-      if (!ch || !ch.isTextBased() || !('send' in ch)) return
+      const ch = await fetchTextChannelOrNull(deps.client, chatId)
+      if (!ch || !('send' in ch)) return
 
       // Truncate input preview for Discord
       const preview = inputPreview.length > 800 ? inputPreview.slice(0, 800) + '...' : inputPreview
@@ -543,6 +591,8 @@ function handlePermissionRequest(
     } catch (err: unknown) {
       process.stderr.write(`discord: permission request send failed: ${err instanceof Error ? err.message : String(err)}\n`)
       permissionSessions.delete(requestId)
+      const t = permissionTimeouts.get(requestId)
+      if (t) { clearTimeout(t); permissionTimeouts.delete(requestId) }
     }
   })()
 }
@@ -562,6 +612,8 @@ export function handlePermissionButton(customId: string): void {
   const verdict: WsPermissionVerdict = { type: 'permissionVerdict', requestId, behavior }
   ws.send(JSON.stringify(verdict))
   permissionSessions.delete(requestId)
+  const t = permissionTimeouts.get(requestId)
+  if (t) { clearTimeout(t); permissionTimeouts.delete(requestId) }
 }
 
 function sendToolResult(ws: WsLike, requestId: string, success: boolean, data: string): void {

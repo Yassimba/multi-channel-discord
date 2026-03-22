@@ -49,15 +49,36 @@ export class SessionManager {
     return actualName
   }
 
-  /** Remove a session from the routing table. */
+  /** Remove a session from the routing table. Also cleans up any extraSends references to this session's send callback. */
   deregisterSession(name: string): void {
-    if (!this.sessions.has(name)) {
+    const slot = this.sessions.get(name)
+    if (!slot) {
       throw new SessionNotFoundError(name)
     }
+    const deadSend = slot.send
     this.sessions.delete(name)
     this.buffers.delete(name)
     if (this.active === name) {
       this.active = null
+    }
+    // Clean up extraSends in other sessions that might reference this session's send callback
+    for (const [, otherSlot] of this.sessions) {
+      const idx = otherSlot.extraSends.indexOf(deadSend)
+      if (idx !== -1) otherSlot.extraSends.splice(idx, 1)
+    }
+  }
+
+  /** Check if a send callback is the primary sender for a session (not an extraSend). */
+  isPrimarySender(sessionName: string, send: (msg: string) => void): boolean {
+    const slot = this.sessions.get(sessionName)
+    return slot?.send === send
+  }
+
+  /** Remove a specific send callback from all sessions' extraSends lists without deregistering the session. */
+  cleanupSender(send: (msg: string) => void): void {
+    for (const [, slot] of this.sessions) {
+      const idx = slot.extraSends.indexOf(send)
+      if (idx !== -1) slot.extraSends.splice(idx, 1)
     }
   }
 
@@ -144,8 +165,9 @@ export class SessionManager {
     return drained
   }
 
-  /** Buffer a reply from a non-active session. Returns the new buffer count. */
+  /** Buffer a reply from a non-active session. Returns the new buffer count, or 0 if session doesn't exist. */
   bufferReply(sessionName: string, text: string): number {
+    if (!this.sessions.has(sessionName)) return 0
     const buf = this.buffers.get(sessionName) ?? []
     buf.push({ text, timestamp: Date.now(), sessionName, meta: {} as ChannelMeta })
     while (buf.length > 500) buf.shift()

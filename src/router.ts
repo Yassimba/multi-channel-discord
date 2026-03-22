@@ -8,7 +8,7 @@
  */
 
 import { loadEnvFile, gate, checkApprovals, loadAccess, getStateDir } from './access.js'
-import { createDiscordClient, safeAttName } from './discord.js'
+import { createDiscordClient, safeAttName, TypingManager } from './discord.js'
 import { SessionManager, ProjectHistory } from './sessions.js'
 import { createWsHandlers, handlePermissionButton } from './ws.js'
 import type { WsData, WsLike } from './ws.js'
@@ -63,39 +63,7 @@ let activeChatId: string | null = null
 // Persistent typing indicator (Feature 2)
 // ============================================================
 
-const typingIntervals = new Map<string, ReturnType<typeof setInterval>>()
-
-async function sendTypingOnce(chatId: string): Promise<void> {
-  try {
-    const ch = await client.channels.fetch(chatId)
-    if (ch && ch.isTextBased() && 'sendTyping' in ch) {
-      await (ch as unknown as { sendTyping(): Promise<void> }).sendTyping()
-    }
-  } catch {}
-}
-
-function startTyping(chatId: string): void {
-  // Don't start duplicate intervals for the same channel
-  if (typingIntervals.has(chatId)) return
-
-  // Send typing immediately
-  void sendTypingOnce(chatId)
-
-  // Refresh every 8 seconds (Discord typing expires after 10s)
-  const interval = setInterval(() => {
-    void sendTypingOnce(chatId)
-  }, 8_000)
-
-  typingIntervals.set(chatId, interval)
-}
-
-function stopTyping(chatId: string): void {
-  const interval = typingIntervals.get(chatId)
-  if (interval) {
-    clearInterval(interval)
-    typingIntervals.delete(chatId)
-  }
-}
+const typingManager = new TypingManager(client)
 
 // ============================================================
 // Bot presence status (Feature 4)
@@ -139,7 +107,7 @@ const wsHandlers = createWsHandlers({
   chunkLimit: Math.min(access.textChunkLimit ?? 2000, 2000),
   chunkMode: access.chunkMode ?? 'length',
   replyToMode: access.replyToMode ?? 'first',
-  onReply: (chatId: string) => stopTyping(chatId),
+  onReply: (chatId: string) => typingManager.stop(chatId),
   onSessionChange: () => updatePresence(),
   onSkillsRegistered: (skills: readonly SkillEntry[]) => {
     updateSkillCommands(client, skills).catch((err: unknown) => {
@@ -165,7 +133,7 @@ const wsServer = Bun.serve<WsData>({
   port: WS_PORT,
   fetch(req, server) {
     const upgraded = server.upgrade(req, {
-      data: { sessionName: null },
+      data: { sessionName: null, sendCallback: null },
     })
     if (!upgraded) {
       return new Response('WebSocket upgrade required', { status: 426 })
@@ -231,7 +199,7 @@ async function handleInbound(msg: Message): Promise<void> {
   activeChatId = msg.channelId
 
   // Start persistent typing indicator (refreshes every 8s until reply)
-  startTyping(msg.channelId)
+  typingManager.start(msg.channelId)
 
   // Ack reaction
   if (accessConfig.ackReaction) {
@@ -339,8 +307,7 @@ async function shutdown(): Promise<void> {
   process.stderr.write('discord channel: shutting down\n')
   clearInterval(bufferInterval)
   // Clear all typing intervals
-  for (const interval of typingIntervals.values()) clearInterval(interval)
-  typingIntervals.clear()
+  typingManager.stopAll()
   try {
     await history.save()
     await sessions.saveBuffers()

@@ -101,4 +101,55 @@ export function safeAttName(name: string, id: string): string {
   return (name ?? id).replace(/[\[\]\r\n;]/g, '_')
 }
 
+// ============================================================
+// Typing indicator manager
+// ============================================================
+
+/** Manages persistent typing indicators for Discord channels. */
+export class TypingManager {
+  private readonly client: Client
+  private readonly intervals = new Map<string, ReturnType<typeof setInterval>>()
+
+  constructor(client: Client) {
+    this.client = client
+  }
+
+  /** Start a persistent typing indicator for a channel. Refreshes every 8s (Discord expires after 10s). */
+  start(chatId: string): void {
+    if (this.intervals.has(chatId)) return
+
+    void this.sendOnce(chatId)
+
+    const interval = setInterval(() => {
+      void this.sendOnce(chatId)
+    }, 8_000)
+
+    this.intervals.set(chatId, interval)
+  }
+
+  /** Stop the typing indicator for a channel. */
+  stop(chatId: string): void {
+    const interval = this.intervals.get(chatId)
+    if (interval) {
+      clearInterval(interval)
+      this.intervals.delete(chatId)
+    }
+  }
+
+  /** Stop all typing indicators. */
+  stopAll(): void {
+    for (const interval of this.intervals.values()) clearInterval(interval)
+    this.intervals.clear()
+  }
+
+  private async sendOnce(chatId: string): Promise<void> {
+    try {
+      const ch = await this.client.channels.fetch(chatId)
+      if (ch && ch.isTextBased() && 'sendTyping' in ch) {
+        await (ch as unknown as { sendTyping(): Promise<void> }).sendTyping()
+      }
+    } catch {}
+  }
+}
+
 export { MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES }
