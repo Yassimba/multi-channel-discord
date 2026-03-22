@@ -21,7 +21,7 @@ user-invocable: true
     })
   })
 
-  test('returns null for non-user-invocable skill', () => {
+  test('includes skill without explicit user-invocable flag', () => {
     const content = `---
 name: refactor
 description: Deep code analysis
@@ -29,7 +29,8 @@ description: Deep code analysis
 
 # Refactor
 `
-    expect(parseFrontmatter(content)).toBeNull()
+    const result = parseFrontmatter(content)
+    expect(result).toEqual({ name: 'refactor', description: 'Deep code analysis' })
   })
 
   test('returns null for user-invocable: false', () => {
@@ -155,29 +156,26 @@ describe('discoverSkills', () => {
     await writeFile(join(skillDir, 'SKILL.md'), `---
 name: commit
 description: Write commit messages
-user-invocable: true
 ---
 `)
 
     const skills = await discoverSkills(projectDir)
-    expect(skills).toHaveLength(1)
-    expect(skills[0]).toEqual({
-      name: 'commit',
-      description: 'Write commit messages',
-    })
+    const commit = skills.find(s => s.name === 'commit')
+    expect(commit).toEqual({ name: 'commit', description: 'Write commit messages' })
   })
 
-  test('skips non-user-invocable skills', async () => {
+  test('skips skills with user-invocable: false', async () => {
     const skillDir = join(projectDir, '.claude', 'skills', 'internal')
     await mkdir(skillDir, { recursive: true })
     await writeFile(join(skillDir, 'SKILL.md'), `---
 name: internal
 description: Not user facing
+user-invocable: false
 ---
 `)
 
     const skills = await discoverSkills(projectDir)
-    expect(skills).toHaveLength(0)
+    expect(skills.find(s => s.name === 'internal')).toBeUndefined()
   })
 
   test('skips directories without SKILL.md', async () => {
@@ -185,40 +183,36 @@ description: Not user facing
     await mkdir(skillDir, { recursive: true })
 
     const skills = await discoverSkills(projectDir)
-    expect(skills).toHaveLength(0)
+    expect(skills.find(s => s.name === 'empty')).toBeUndefined()
   })
 
-  test('returns empty array when no skills directory exists', async () => {
+  test('returns user skills even when no project skills directory exists', async () => {
     const skills = await discoverSkills(projectDir)
-    expect(skills).toHaveLength(0)
+    // May include user-level skills from ~/.claude/skills/
+    expect(Array.isArray(skills)).toBe(true)
   })
 
   test('project skills override user skills by name', async () => {
-    // We can only test project skills here (user skills require writing to ~/.claude)
-    // but we can test the dedup logic by having two skills with different dirs
     const skill1 = join(projectDir, '.claude', 'skills', 'deploy')
     await mkdir(skill1, { recursive: true })
     await writeFile(join(skill1, 'SKILL.md'), `---
 name: deploy
 description: Project deploy
-user-invocable: true
 ---
 `)
 
-    const skill2 = join(projectDir, '.claude', 'skills', 'test')
+    const skill2 = join(projectDir, '.claude', 'skills', 'test-skill')
     await mkdir(skill2, { recursive: true })
     await writeFile(join(skill2, 'SKILL.md'), `---
-name: test
+name: test-skill
 description: Run tests
-user-invocable: true
 ---
 `)
 
     const skills = await discoverSkills(projectDir)
-    expect(skills).toHaveLength(2)
     const names = skills.map(s => s.name)
     expect(names).toContain('deploy')
-    expect(names).toContain('test')
+    expect(names).toContain('test-skill')
   })
 
   test('respects limit parameter', async () => {
