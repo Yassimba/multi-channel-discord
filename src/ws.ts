@@ -3,7 +3,7 @@
  * Handles registration, reply, react, rename, deregister.
  */
 
-import type { PluginToRouterMessage, WsRegistered, WsRenamed, WsError, WsToolResult } from './types.js'
+import type { PluginToRouterMessage, WsRegistered, WsRenamed, WsError, WsToolResult, WsPermissionVerdict } from './types.js'
 import type { SessionManager, ProjectHistory } from './sessions.js'
 import { chunk, assertSendable } from './discord.js'
 import { noteSent, getStateDir } from './access.js'
@@ -32,6 +32,8 @@ export interface WsDeps {
   chunkMode: 'length' | 'newline'
   replyToMode: 'off' | 'first' | 'all'
   stateDir?: string
+  onReply?: (chatId: string) => void
+  onSessionChange?: () => void
 }
 
 interface WsLike {
@@ -120,6 +122,13 @@ export function createWsHandlers(deps: WsDeps): WsHandlers {
           }
           handleAskUser(ws, parsed.requestId, parsed.chatId, parsed.question, (parsed as any).options ?? [], deps)
           break
+        case 'permissionRequest':
+          if (!hasString(parsed, 'requestId') || !hasString(parsed, 'toolName') || !hasString(parsed, 'description') || !hasString(parsed, 'inputPreview')) {
+            sendError(ws, 'permissionRequest requires requestId, toolName, description, and inputPreview')
+            return
+          }
+          handlePermissionRequest(ws, parsed.requestId, parsed.toolName, parsed.description, parsed.inputPreview, deps)
+          break
         default:
           sendError(ws, `Unknown message type: ${(parsed as { type: string }).type}`)
       }
@@ -131,6 +140,7 @@ export function createWsHandlers(deps: WsDeps): WsHandlers {
           deps.sessions.deregisterSession(ws.data.sessionName)
         } catch {}
         ws.data.sessionName = null
+        deps.onSessionChange?.()
       }
     },
   }
@@ -147,6 +157,7 @@ function handleRegister(ws: WsLike, name: string, projectPath: string, deps: WsD
 
   const response: WsRegistered = { type: 'registered', name: actualName }
   ws.send(JSON.stringify(response))
+  deps.onSessionChange?.()
 }
 
 function handleDeregister(ws: WsLike, deps: WsDeps): void {
@@ -155,6 +166,7 @@ function handleDeregister(ws: WsLike, deps: WsDeps): void {
       deps.sessions.deregisterSession(ws.data.sessionName)
     } catch {}
     ws.data.sessionName = null
+    deps.onSessionChange?.()
   }
 }
 
@@ -197,6 +209,9 @@ function handleReply(ws: WsLike, text: string, replyTo: string | undefined, file
     const shouldReplyTo = replyTo != null && deps.replyToMode !== 'off' && (deps.replyToMode === 'all' || i === 0)
     sendToDiscord(deps.client, chatId, chunks[i], shouldReplyTo ? replyTo : undefined, i === 0 ? files : undefined)
   }
+
+  // Stop typing indicator when a reply is sent
+  deps.onReply?.(chatId)
 }
 
 function handleReact(chatId: string, messageId: string, emoji: string, deps: WsDeps): void {
@@ -432,6 +447,78 @@ function handleAskUser(
       sendToolResult(ws, requestId, false, `Ask failed: ${err}`)
     }
   })()
+}
+
+/** Map of permission request ID → WS connection that sent it, so we can route verdicts back. */
+const permissionSessions = new Map<string, WsLike>()
+
+function handlePermissionRequest(
+  ws: WsLike,
+  requestId: string,
+  toolName: string,
+  description: string,
+  inputPreview: string,
+  deps: WsDeps,
+): void {
+  const chatId = deps.chatId()
+  if (!chatId) return
+
+  const sessionName = ws.data.sessionName ?? 'unknown'
+
+  // Store the WS so we can route the verdict back
+  permissionSessions.set(requestId, ws)
+
+  void (async () => {
+    try {
+      const ch = await deps.client.channels.fetch(chatId)
+      if (!ch || !ch.isTextBased() || !('send' in ch)) return
+
+      // Truncate input preview for Discord
+      const preview = inputPreview.length > 800 ? inputPreview.slice(0, 800) + '...' : inputPreview
+
+      const row = new ActionRowBuilder<ButtonBuilder>()
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`perm_yes_${requestId}`)
+          .setLabel(`yes ${requestId}`)
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`perm_no_${requestId}`)
+          .setLabel(`no ${requestId}`)
+          .setStyle(ButtonStyle.Danger),
+      )
+
+      const content = [
+        `**[${sessionName}] Permission Request**`,
+        `**Tool:** \`${toolName}\``,
+        `**Description:** ${description}`,
+        `\`\`\`\n${preview}\n\`\`\``,
+      ].join('\n')
+
+      const sent = await ch.send({ content, components: [row] })
+      noteSent(sent.id)
+    } catch (err) {
+      process.stderr.write(`discord: permission request send failed: ${err}\n`)
+      permissionSessions.delete(requestId)
+    }
+  })()
+}
+
+/** Handle a button click for a permission request. Called from the router's interactionCreate handler. */
+export function handlePermissionButton(customId: string): void {
+  const yesMatch = customId.match(/^perm_yes_(.+)$/)
+  const noMatch = customId.match(/^perm_no_(.+)$/)
+
+  const requestId = yesMatch?.[1] ?? noMatch?.[1]
+  if (!requestId) return
+
+  const behavior: 'allow' | 'deny' = yesMatch ? 'allow' : 'deny'
+  const ws = permissionSessions.get(requestId)
+  if (!ws) return
+
+  const verdict: WsPermissionVerdict = { type: 'permissionVerdict', requestId, behavior }
+  ws.send(JSON.stringify(verdict))
+  permissionSessions.delete(requestId)
 }
 
 function sendToolResult(ws: WsLike, requestId: string, success: boolean, data: string): void {

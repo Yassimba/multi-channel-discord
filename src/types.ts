@@ -70,6 +70,15 @@ export interface WsDeregister {
   type: 'deregister'
 }
 
+/** Plugin → Router: forward a permission prompt from Claude Code */
+export interface WsPermissionRequest {
+  type: 'permissionRequest'
+  requestId: string  // 5 lowercase letter ID from Claude Code
+  toolName: string
+  description: string
+  inputPreview: string
+}
+
 /** Union of all messages a plugin can send to the router */
 export type PluginToRouterMessage =
   | WsRegister
@@ -81,6 +90,7 @@ export type PluginToRouterMessage =
   | WsFetchMessages
   | WsAskUser
   | WsDeregister
+  | WsPermissionRequest
 
 // ============================================================
 // Router → Plugin messages
@@ -120,6 +130,13 @@ export interface WsToolResult {
   data: string
 }
 
+/** Router → Plugin: user clicked a permission button */
+export interface WsPermissionVerdict {
+  type: 'permissionVerdict'
+  requestId: string
+  behavior: 'allow' | 'deny'
+}
+
 /** Union of all messages the router can send to a plugin */
 export type RouterToPluginMessage =
   | WsMessage
@@ -127,6 +144,7 @@ export type RouterToPluginMessage =
   | WsRenamed
   | WsError
   | WsToolResult
+  | WsPermissionVerdict
 
 // ============================================================
 // Session management

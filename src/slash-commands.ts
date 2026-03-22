@@ -6,6 +6,7 @@
 
 import {
   SlashCommandBuilder,
+  EmbedBuilder,
   REST,
   Routes,
   type Client,
@@ -66,6 +67,10 @@ const spawnCommand = new SlashCommandBuilder()
       .setAutocomplete(true),
   )
 
+const helpCommand = new SlashCommandBuilder()
+  .setName('help')
+  .setDescription('Show all available commands and their descriptions')
+
 export const ALL_COMMANDS = [
   switchCommand,
   listCommand,
@@ -73,6 +78,7 @@ export const ALL_COMMANDS = [
   killCommand,
   broadcastCommand,
   spawnCommand,
+  helpCommand,
 ]
 
 // ============================================================
@@ -161,6 +167,7 @@ export async function handleSlashCommand(
     case 'kill': return handleKill(interaction, deps)
     case 'broadcast': return handleBroadcast(interaction, deps)
     case 'spawn': return handleSpawn(interaction, deps)
+    case 'help': return handleHelp(interaction)
     default:
       await interaction.reply({ content: `Unknown command: /${interaction.commandName}`, ephemeral: true })
   }
@@ -334,6 +341,31 @@ async function handleSpawn(
     content: `Recent projects:\n${lines.join('\n')}\n\nUse \`/spawn project:<path>\` to spawn.`,
     ephemeral: true,
   })
+}
+
+async function handleHelp(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const embed = new EmbedBuilder()
+    .setTitle('Claude Code Discord Channel')
+    .setDescription('Multi-session routing for Claude Code via Discord.')
+    .addFields(
+      { name: '/switch <session>', value: 'Switch the active Claude Code session. Messages you send will be routed to the active session.' },
+      { name: '/list', value: 'List all connected Claude Code sessions with their status (active, idle, buffered messages).' },
+      { name: '/status', value: 'Show router uptime, connected instance count, and queued message count.' },
+      { name: '/kill <session|all>', value: 'Terminate a specific session or all sessions.' },
+      { name: '/broadcast <message>', value: 'Send a message to all connected sessions simultaneously.' },
+      { name: '/spawn [project]', value: 'Spawn a new Claude Code session. Shows recent projects if none specified.' },
+      { name: '/help', value: 'Show this help message.' },
+    )
+    .addFields(
+      { name: '\u200b', value: '**Claude Code Skills** (run in your terminal, not Discord)' },
+      { name: '/discord:access', value: 'Manage pairing, allowlists, and DM/group policy.' },
+      { name: '/discord:configure', value: 'Set up the bot token and review channel configuration.' },
+    )
+    .setFooter({ text: 'Messages sent in this DM are forwarded to the active Claude Code session.' })
+
+  await interaction.reply({ embeds: [embed], ephemeral: true })
 }
 
 // ============================================================

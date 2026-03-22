@@ -9,12 +9,12 @@
 import { loadEnvFile, gate, checkApprovals, loadAccess, getStateDir } from './access.js'
 import { createDiscordClient, safeAttName } from './discord.js'
 import { SessionManager, ProjectHistory } from './sessions.js'
-import { createWsHandlers } from './ws.js'
+import { createWsHandlers, handlePermissionButton } from './ws.js'
 import type { WsData } from './ws.js'
 import { PidManager } from './pid.js'
 import { registerSlashCommands, handleSlashCommand, handleAutocomplete } from './slash-commands.js'
 import type { SlashCommandDeps } from './slash-commands.js'
-import type { Message } from 'discord.js'
+import { ActivityType, type Message } from 'discord.js'
 
 // Load token from ~/.claude/channels/discord/.env
 loadEnvFile()
@@ -58,6 +58,72 @@ const startedAt = Date.now()
 let activeChatId: string | null = null
 
 // ============================================================
+// Persistent typing indicator (Feature 2)
+// ============================================================
+
+const typingIntervals = new Map<string, ReturnType<typeof setInterval>>()
+
+async function sendTypingOnce(chatId: string): Promise<void> {
+  try {
+    const ch = await client.channels.fetch(chatId)
+    if (ch && ch.isTextBased() && 'sendTyping' in ch) {
+      await (ch as unknown as { sendTyping(): Promise<void> }).sendTyping()
+    }
+  } catch {}
+}
+
+function startTyping(chatId: string): void {
+  // Don't start duplicate intervals for the same channel
+  if (typingIntervals.has(chatId)) return
+
+  // Send typing immediately
+  void sendTypingOnce(chatId)
+
+  // Refresh every 8 seconds (Discord typing expires after 10s)
+  const interval = setInterval(() => {
+    void sendTypingOnce(chatId)
+  }, 8_000)
+
+  typingIntervals.set(chatId, interval)
+}
+
+function stopTyping(chatId: string): void {
+  const interval = typingIntervals.get(chatId)
+  if (interval) {
+    clearInterval(interval)
+    typingIntervals.delete(chatId)
+  }
+}
+
+// ============================================================
+// Bot presence status (Feature 4)
+// ============================================================
+
+function updatePresence(): void {
+  if (!client.user) return
+  const sessionList = sessions.getSessions()
+  const count = sessionList.length
+  const active = sessions.getActive()
+
+  if (count === 0) {
+    client.user.setPresence({
+      activities: [{ name: 'No sessions', type: ActivityType.Custom }],
+      status: 'idle',
+    })
+  } else if (active) {
+    client.user.setPresence({
+      activities: [{ name: `Working on: ${active} (${count} session${count === 1 ? '' : 's'})`, type: ActivityType.Custom }],
+      status: 'online',
+    })
+  } else {
+    client.user.setPresence({
+      activities: [{ name: `${count} session${count === 1 ? '' : 's'} connected`, type: ActivityType.Custom }],
+      status: 'online',
+    })
+  }
+}
+
+// ============================================================
 // WebSocket server for Claude Code plugins
 // ============================================================
 
@@ -71,6 +137,8 @@ const wsHandlers = createWsHandlers({
   chunkLimit: Math.min(access.textChunkLimit ?? 2000, 2000),
   chunkMode: access.chunkMode ?? 'length',
   replyToMode: access.replyToMode ?? 'first',
+  onReply: (chatId: string) => stopTyping(chatId),
+  onSessionChange: () => updatePresence(),
 })
 
 const wsServer = Bun.serve<WsData>({
@@ -142,10 +210,8 @@ async function handleInbound(msg: Message): Promise<void> {
   // Track the active chat
   activeChatId = msg.channelId
 
-  // Typing indicator
-  if ('sendTyping' in msg.channel) {
-    void msg.channel.sendTyping().catch(() => {})
-  }
+  // Start persistent typing indicator (refreshes every 8s until reply)
+  startTyping(msg.channelId)
 
   // Ack reaction
   if (accessConfig.ackReaction) {
@@ -201,9 +267,28 @@ client.on('interactionCreate', interaction => {
     return
   }
   if (interaction.isChatInputCommand()) {
-    handleSlashCommand(interaction, slashDeps).catch(e =>
+    handleSlashCommand(interaction, slashDeps).then(() => {
+      // Update presence after slash commands that may change sessions
+      if (['switch', 'kill'].includes(interaction.commandName)) {
+        updatePresence()
+      }
+    }).catch(e =>
       process.stderr.write(`discord: slash command failed: ${e}\n`),
     )
+    return
+  }
+  // Handle permission button clicks
+  if (interaction.isButton()) {
+    const customId = interaction.customId
+    if (customId.startsWith('perm_yes_') || customId.startsWith('perm_no_')) {
+      const isAllow = customId.startsWith('perm_yes_')
+      const requestId = customId.replace(/^perm_(yes|no)_/, '')
+      handlePermissionButton(customId)
+      interaction.update({
+        content: interaction.message.content + `\n\n> **${isAllow ? 'Allowed' : 'Denied'}**`,
+        components: [],
+      }).catch(e => process.stderr.write(`discord: permission button update failed: ${e}\n`))
+    }
   }
 })
 
@@ -212,6 +297,7 @@ client.once('clientReady', c => {
   registerSlashCommands(c).catch(e =>
     process.stderr.write(`discord: registerSlashCommands failed: ${e}\n`),
   )
+  updatePresence()
 })
 
 // Poll for pairing approvals
@@ -232,6 +318,9 @@ async function shutdown(): Promise<void> {
   shuttingDown = true
   process.stderr.write('discord channel: shutting down\n')
   clearInterval(bufferInterval)
+  // Clear all typing intervals
+  for (const interval of typingIntervals.values()) clearInterval(interval)
+  typingIntervals.clear()
   try {
     await history.save()
     await sessions.saveBuffers()
