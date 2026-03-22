@@ -11,10 +11,11 @@ import { loadEnvFile, gate, checkApprovals, loadAccess, getStateDir } from './ac
 import { createDiscordClient, safeAttName } from './discord.js'
 import { SessionManager, ProjectHistory } from './sessions.js'
 import { createWsHandlers, handlePermissionButton } from './ws.js'
-import type { WsData } from './ws.js'
+import type { WsData, WsLike } from './ws.js'
 import { PidManager } from './pid.js'
 import { registerSlashCommands, handleSlashCommand, handleAutocomplete, updateSkillCommands, isSkillCommand } from './slash-commands.js'
 import type { SlashCommandDeps, SkillEntry } from './slash-commands.js'
+import type { ChannelMeta } from './types.js'
 import { ActivityType, type Message } from 'discord.js'
 
 // Load token from ~/.claude/channels/discord/.env
@@ -41,11 +42,11 @@ if (!TOKEN) {
 const client = createDiscordClient()
 
 // Safety nets
-process.on('unhandledRejection', err => {
-  process.stderr.write(`discord channel: unhandled rejection: ${err}\n`)
+process.on('unhandledRejection', (err: unknown) => {
+  process.stderr.write(`discord channel: unhandled rejection: ${err instanceof Error ? err.message : String(err)}\n`)
 })
-process.on('uncaughtException', err => {
-  process.stderr.write(`discord channel: uncaught exception: ${err}\n`)
+process.on('uncaughtException', (err: unknown) => {
+  process.stderr.write(`discord channel: uncaught exception: ${err instanceof Error ? err.message : String(err)}\n`)
 })
 
 // ============================================================
@@ -140,12 +141,25 @@ const wsHandlers = createWsHandlers({
   replyToMode: access.replyToMode ?? 'first',
   onReply: (chatId: string) => stopTyping(chatId),
   onSessionChange: () => updatePresence(),
-  onSkillsRegistered: (skills: SkillEntry[]) => {
-    updateSkillCommands(client, skills).catch(err => {
-      process.stderr.write(`discord channel: skill command registration failed: ${err}\n`)
+  onSkillsRegistered: (skills: readonly SkillEntry[]) => {
+    updateSkillCommands(client, skills).catch((err: unknown) => {
+      process.stderr.write(`discord channel: skill command registration failed: ${err instanceof Error ? err.message : String(err)}\n`)
     })
   },
 })
+
+/** Adapter to bridge Bun's ServerWebSocket to the WsLike interface used by handlers. */
+interface BunServerWebSocket {
+  data: WsData
+  send(msg: string | ArrayBufferLike | Uint8Array): number
+}
+
+function toBunWsLike(ws: BunServerWebSocket): WsLike {
+  return {
+    data: ws.data,
+    send(msg: string) { ws.send(msg) },
+  }
+}
 
 const wsServer = Bun.serve<WsData>({
   port: WS_PORT,
@@ -160,13 +174,13 @@ const wsServer = Bun.serve<WsData>({
   },
   websocket: {
     open(ws) {
-      wsHandlers.open(ws as any)
+      wsHandlers.open(toBunWsLike(ws))
     },
     message(ws, msg) {
-      wsHandlers.message(ws as any, msg as string | Buffer)
+      wsHandlers.message(toBunWsLike(ws), msg as string | Buffer)
     },
     close(ws) {
-      wsHandlers.close(ws as any)
+      wsHandlers.close(toBunWsLike(ws))
     },
   },
 })
@@ -205,8 +219,8 @@ async function handleInbound(msg: Message): Promise<void> {
     const lead = result.isResend ? 'Still pending' : 'Pairing required'
     try {
       await msg.reply(`${lead} — run in Claude Code:\n\n/discord:access pair ${result.code}`)
-    } catch (err) {
-      process.stderr.write(`discord channel: failed to send pairing code: ${err}\n`)
+    } catch (err: unknown) {
+      process.stderr.write(`discord channel: failed to send pairing code: ${err instanceof Error ? err.message : String(err)}\n`)
     }
     return
   }
@@ -234,7 +248,7 @@ async function handleInbound(msg: Message): Promise<void> {
   const content = msg.content || (atts.length > 0 ? '(attachment)' : '')
 
   // Route to active session
-  const meta: Record<string, string> = {
+  const meta: ChannelMeta = {
     chat_id: msg.channelId,
     message_id: msg.id,
     user: msg.author.username,
@@ -258,13 +272,13 @@ async function handleInbound(msg: Message): Promise<void> {
 // Event handlers
 // ============================================================
 
-client.on('error', err => {
-  process.stderr.write(`discord channel: client error: ${err}\n`)
+client.on('error', (err: Error) => {
+  process.stderr.write(`discord channel: client error: ${err.message}\n`)
 })
 
 client.on('messageCreate', msg => {
   if (msg.author.bot) return
-  handleInbound(msg).catch(e => process.stderr.write(`discord: handleInbound failed: ${e}\n`))
+  handleInbound(msg).catch((e: unknown) => process.stderr.write(`discord: handleInbound failed: ${e instanceof Error ? e.message : String(e)}\n`))
 })
 
 client.on('interactionCreate', interaction => {
@@ -278,8 +292,8 @@ client.on('interactionCreate', interaction => {
       if (['switch', 'kill'].includes(interaction.commandName)) {
         updatePresence()
       }
-    }).catch(e =>
-      process.stderr.write(`discord: slash command failed: ${e}\n`),
+    }).catch((e: unknown) =>
+      process.stderr.write(`discord: slash command failed: ${e instanceof Error ? e.message : String(e)}\n`),
     )
     return
   }
@@ -293,15 +307,15 @@ client.on('interactionCreate', interaction => {
       interaction.update({
         content: interaction.message.content + `\n\n> **${isAllow ? 'Allowed' : 'Denied'}**`,
         components: [],
-      }).catch(e => process.stderr.write(`discord: permission button update failed: ${e}\n`))
+      }).catch((e: unknown) => process.stderr.write(`discord: permission button update failed: ${e instanceof Error ? e.message : String(e)}\n`))
     }
   }
 })
 
 client.once('clientReady', c => {
   process.stderr.write(`discord channel: gateway connected as ${c.user.tag}\n`)
-  registerSlashCommands(c).catch(e =>
-    process.stderr.write(`discord: registerSlashCommands failed: ${e}\n`),
+  registerSlashCommands(c).catch((e: unknown) =>
+    process.stderr.write(`discord: registerSlashCommands failed: ${e instanceof Error ? e.message : String(e)}\n`),
   )
   updatePresence()
 })
@@ -348,7 +362,7 @@ await sessions.loadBuffers()
 // Start
 // ============================================================
 
-client.login(TOKEN).catch(err => {
-  process.stderr.write(`discord channel: login failed: ${err}\n`)
+client.login(TOKEN).catch((err: unknown) => {
+  process.stderr.write(`discord channel: login failed: ${err instanceof Error ? err.message : String(err)}\n`)
   process.exit(1)
 })

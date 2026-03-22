@@ -8,8 +8,8 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 
 export interface SkillInfo {
-  name: string
-  description: string
+  readonly name: string
+  readonly description: string
 }
 
 /** Parse YAML frontmatter from a SKILL.md file. Returns null if not parseable or not user-invocable. */
@@ -82,7 +82,7 @@ async function scanSkillsDir(dir: string): Promise<SkillInfo[]> {
  * Project skills override user skills when names collide.
  * Returns at most `limit` skills.
  */
-export async function discoverSkills(projectDir: string, limit = 90): Promise<SkillInfo[]> {
+export async function discoverSkills(projectDir: string, limit = 90): Promise<readonly SkillInfo[]> {
   const userSkillsDir = join(homedir(), '.claude', 'skills')
   const projectSkillsDir = join(projectDir, '.claude', 'skills')
 

@@ -39,34 +39,34 @@ export function getEnvFile(stateDir?: string): string {
 // ============================================================
 
 export interface PendingEntry {
-  senderId: string
-  chatId: string
-  createdAt: number
-  expiresAt: number
+  readonly senderId: string
+  readonly chatId: string
+  readonly createdAt: number
+  readonly expiresAt: number
   replies: number
 }
 
 export interface GroupPolicy {
-  requireMention: boolean
-  allowFrom: string[]
+  readonly requireMention: boolean
+  readonly allowFrom: readonly string[]
 }
 
 export interface AccessConfig {
-  dmPolicy: 'pairing' | 'allowlist' | 'disabled'
-  allowFrom: string[]
-  groups: Record<string, GroupPolicy>
+  readonly dmPolicy: 'pairing' | 'allowlist' | 'disabled'
+  readonly allowFrom: readonly string[]
+  readonly groups: Readonly<Record<string, GroupPolicy>>
   pending: Record<string, PendingEntry>
-  mentionPatterns?: string[]
-  ackReaction?: string
-  replyToMode?: 'off' | 'first' | 'all'
-  textChunkLimit?: number
-  chunkMode?: 'length' | 'newline'
+  readonly mentionPatterns?: readonly string[]
+  readonly ackReaction?: string
+  readonly replyToMode?: 'off' | 'first' | 'all'
+  readonly textChunkLimit?: number
+  readonly chunkMode?: 'length' | 'newline'
 }
 
 export type GateResult =
-  | { action: 'deliver'; access: AccessConfig }
-  | { action: 'drop' }
-  | { action: 'pair'; code: string; isResend: boolean }
+  | { readonly action: 'deliver'; readonly access: AccessConfig }
+  | { readonly action: 'drop' }
+  | { readonly action: 'pair'; readonly code: string; readonly isResend: boolean }
 
 // ============================================================
 // Defaults
@@ -101,7 +101,7 @@ export function loadAccess(stateDir?: string): AccessConfig {
       textChunkLimit: parsed.textChunkLimit,
       chunkMode: parsed.chunkMode,
     }
-  } catch (err) {
+  } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return defaultAccess()
     try { renameSync(file, `${file}.corrupt-${Date.now()}`) } catch {}
     process.stderr.write(`discord: access.json is corrupt, moved aside. Starting fresh.\n`)
@@ -109,7 +109,7 @@ export function loadAccess(stateDir?: string): AccessConfig {
   }
 }
 
-export function saveAccess(access: AccessConfig, stateDir?: string): void {
+export function saveAccess(access: Readonly<AccessConfig>, stateDir?: string): void {
   const dir = getStateDir(stateDir)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   const file = getAccessFile(stateDir)
@@ -161,44 +161,53 @@ export async function gate(msg: Message, stateDir?: string): Promise<GateResult>
   const isDM = msg.channel.type === ChannelType.DM
 
   if (isDM) {
-    if (access.allowFrom.includes(senderId)) return { action: 'deliver', access }
-    if (access.dmPolicy === 'allowlist') return { action: 'drop' }
-
-    // Pairing mode — check for existing code for this sender
-    for (const [code, p] of Object.entries(access.pending)) {
-      if (p.senderId === senderId) {
-        if ((p.replies ?? 1) >= 2) return { action: 'drop' }
-        p.replies = (p.replies ?? 1) + 1
-        saveAccess(access, stateDir)
-        return { action: 'pair', code, isResend: true }
-      }
-    }
-    // Cap pending at 3
-    if (Object.keys(access.pending).length >= 3) return { action: 'drop' }
-
-    const code = randomBytes(3).toString('hex')
-    const now = Date.now()
-    access.pending[code] = {
-      senderId,
-      chatId: msg.channelId,
-      createdAt: now,
-      expiresAt: now + 60 * 60 * 1000, // 1h
-      replies: 1,
-    }
-    saveAccess(access, stateDir)
-    return { action: 'pair', code, isResend: false }
+    return gateDM(msg, access, senderId, stateDir)
   }
 
-  // Guild channel — check per-channel opt-in
+  return gateGuild(msg, access, senderId)
+}
+
+function gateDM(msg: Message, access: AccessConfig, senderId: string, stateDir?: string): GateResult {
+  if (access.allowFrom.includes(senderId)) return { action: 'deliver', access }
+  if (access.dmPolicy === 'allowlist') return { action: 'drop' }
+
+  // Pairing mode -- check for existing code for this sender
+  for (const [code, p] of Object.entries(access.pending)) {
+    if (p.senderId === senderId) {
+      if ((p.replies ?? 1) >= 2) return { action: 'drop' }
+      p.replies = (p.replies ?? 1) + 1
+      saveAccess(access, stateDir)
+      return { action: 'pair', code, isResend: true }
+    }
+  }
+  // Cap pending at 3
+  if (Object.keys(access.pending).length >= 3) return { action: 'drop' }
+
+  const code = randomBytes(3).toString('hex')
+  const now = Date.now()
+  access.pending[code] = {
+    senderId,
+    chatId: msg.channelId,
+    createdAt: now,
+    expiresAt: now + 60 * 60 * 1000, // 1h
+    replies: 1,
+  }
+  saveAccess(access, stateDir)
+  return { action: 'pair', code, isResend: false }
+}
+
+async function gateGuild(msg: Message, access: AccessConfig, senderId: string): Promise<GateResult> {
   const channelId = msg.channel.isThread()
     ? msg.channel.parentId ?? msg.channelId
     : msg.channelId
   const policy = access.groups[channelId]
   if (!policy) return { action: 'drop' }
+
   const groupAllowFrom = policy.allowFrom ?? []
   if (groupAllowFrom.length > 0 && !groupAllowFrom.includes(senderId)) {
     return { action: 'drop' }
   }
+
   const requireMention = policy.requireMention ?? true
   if (requireMention && !(await isMentioned(msg, access.mentionPatterns))) {
     return { action: 'drop' }
@@ -206,7 +215,7 @@ export async function gate(msg: Message, stateDir?: string): Promise<GateResult>
   return { action: 'deliver', access }
 }
 
-async function isMentioned(msg: Message, extraPatterns?: string[]): Promise<boolean> {
+async function isMentioned(msg: Message, extraPatterns?: readonly string[]): Promise<boolean> {
   if (msg.client.user && msg.mentions.has(msg.client.user)) return true
 
   const refId = msg.reference?.messageId
@@ -255,6 +264,7 @@ export function checkApprovals(client: Client, stateDir?: string): void {
       continue
     }
 
+    // Fire-and-forget: send approval confirmation asynchronously without blocking the polling loop
     void (async () => {
       try {
         const ch = await client.channels.fetch(dmChannelId)
@@ -262,8 +272,8 @@ export function checkApprovals(client: Client, stateDir?: string): void {
           await ch.send("Paired! Say hi to Claude.")
         }
         rmSync(file, { force: true })
-      } catch (err) {
-        process.stderr.write(`discord: failed to send approval confirm: ${err}\n`)
+      } catch (err: unknown) {
+        process.stderr.write(`discord: failed to send approval confirm: ${err instanceof Error ? err.message : String(err)}\n`)
         rmSync(file, { force: true })
       }
     })()

@@ -142,7 +142,7 @@ describe('WS rename', () => {
 
 describe('WS registerSkills', () => {
   test('calls onSkillsRegistered callback with skills', () => {
-    const onSkills = mock((_skills: Array<{ name: string; description: string }>) => {})
+    const onSkills = mock((_skills: ReadonlyArray<{ name: string; description: string }>) => {})
     const deps = { ...makeDeps(), onSkillsRegistered: onSkills }
     const handlers = createWsHandlers(deps)
     const ws = makeMockWs()

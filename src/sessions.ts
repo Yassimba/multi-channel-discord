@@ -5,17 +5,17 @@
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { SessionEntry, BufferedMessage, WsMessage, ProjectHistoryEntry } from './types.js'
+import type { SessionEntry, BufferedMessage, WsMessage, ProjectHistoryEntry, ChannelMeta } from './types.js'
 import { SessionNotFoundError } from './errors.js'
 import { getStateDir } from './access.js'
 
 interface SessionSlot {
-  name: string
-  projectPath: string
-  connectedAt: number
+  readonly name: string
+  readonly projectPath: string
+  readonly connectedAt: number
   messageCount: number
-  send: (msg: string) => void
-  extraSends: Array<(msg: string) => void>
+  readonly send: (msg: string) => void
+  readonly extraSends: Array<(msg: string) => void>
 }
 
 /** Manages the routing table, active session, message buffers, and unrouted inbox. */
@@ -93,7 +93,7 @@ export class SessionManager {
   }
 
   /** Route a message to the active session. Returns false if queued to unrouted. */
-  routeToActive(text: string, meta: Record<string, string>): boolean {
+  routeToActive(text: string, meta: ChannelMeta): boolean {
     if (!this.active) {
       this.unrouted.push({ text, timestamp: Date.now(), sessionName: '', meta })
       return false
@@ -114,7 +114,7 @@ export class SessionManager {
   }
 
   /** Send a message to a specific session by name. */
-  routeToSession(name: string, text: string, meta: Record<string, string>): boolean {
+  routeToSession(name: string, text: string, meta: ChannelMeta): boolean {
     const slot = this.sessions.get(name)
     if (!slot) return false
     const msg: WsMessage = { type: 'message', content: text, meta }
@@ -125,7 +125,7 @@ export class SessionManager {
     return true
   }
 
-  getSessions(): SessionEntry[] {
+  getSessions(): readonly SessionEntry[] {
     return Array.from(this.sessions.values()).map((slot) => ({
       name: slot.name,
       projectPath: slot.projectPath,
@@ -147,7 +147,7 @@ export class SessionManager {
   /** Buffer a reply from a non-active session. Returns the new buffer count. */
   bufferReply(sessionName: string, text: string): number {
     const buf = this.buffers.get(sessionName) ?? []
-    buf.push({ text, timestamp: Date.now(), sessionName, meta: {} })
+    buf.push({ text, timestamp: Date.now(), sessionName, meta: {} as ChannelMeta })
     while (buf.length > 500) buf.shift()
     this.buffers.set(sessionName, buf)
     return buf.length
@@ -163,7 +163,7 @@ export class SessionManager {
     return this.buffers.get(sessionName)?.length ?? 0
   }
 
-  getAllBuffers(): ReadonlyMap<string, BufferedMessage[]> {
+  getAllBuffers(): ReadonlyMap<string, readonly BufferedMessage[]> {
     return this.buffers
   }
 
@@ -182,7 +182,7 @@ export class SessionManager {
     const dir = getStateDir(stateDir)
     try {
       const content = await readFile(join(dir, 'buffers.json'), 'utf-8')
-      const data = JSON.parse(content)
+      const data = JSON.parse(content) as { buffers?: Record<string, BufferedMessage[]>; unrouted?: BufferedMessage[] }
       if (data.buffers) this.buffers = new Map(Object.entries(data.buffers))
       if (Array.isArray(data.unrouted)) this.unrouted = data.unrouted
     } catch {
@@ -219,7 +219,7 @@ export class ProjectHistory {
     while (this.entries.length > this.maxEntries) this.entries.shift()
   }
 
-  getRecent(limit?: number): ProjectHistoryEntry[] {
+  getRecent(limit?: number): readonly ProjectHistoryEntry[] {
     const sorted = [...this.entries].reverse().sort((a, b) => b.lastUsed - a.lastUsed)
     return limit !== undefined ? sorted.slice(0, limit) : sorted
   }
@@ -227,7 +227,7 @@ export class ProjectHistory {
   async load(): Promise<void> {
     try {
       const content = await readFile(join(this.dir, PROJECTS_FILE), 'utf-8')
-      this.entries = JSON.parse(content)
+      this.entries = JSON.parse(content) as ProjectHistoryEntry[]
     } catch {}
   }
 

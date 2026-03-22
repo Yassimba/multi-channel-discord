@@ -15,6 +15,7 @@ import {
 } from 'discord.js'
 import type { SessionManager, ProjectHistory } from './sessions.js'
 import { formatFlush } from './sessions.js'
+import type { ChannelMeta } from './types.js'
 
 // ============================================================
 // Command definitions
@@ -79,7 +80,7 @@ export const BUILTIN_COMMANDS = [
   broadcastCommand,
   spawnCommand,
   helpCommand,
-]
+] as const
 
 /** @deprecated Use BUILTIN_COMMANDS instead */
 export const ALL_COMMANDS = BUILTIN_COMMANDS
@@ -95,15 +96,15 @@ const BUILTIN_NAMES = new Set(BUILTIN_COMMANDS.map(c => c.name))
 const MAX_SKILL_COMMANDS = 90
 
 /** Currently registered skill names (for diffing on re-registration). */
-let registeredSkillNames: string[] = []
+let registeredSkillNames: readonly string[] = []
 
 export interface SkillEntry {
-  name: string
-  description: string
+  readonly name: string
+  readonly description: string
 }
 
 /** Build a slash command JSON payload for a skill. */
-function buildSkillCommand(skill: SkillEntry): { toJSON(): unknown } {
+function buildSkillCommand(skill: Readonly<SkillEntry>): { toJSON(): unknown } {
   const cmd = new SlashCommandBuilder()
     .setName(skill.name)
     .setDescription(skill.description.slice(0, 100) || skill.name)
@@ -119,7 +120,7 @@ function buildSkillCommand(skill: SkillEntry): { toJSON(): unknown } {
 // Registration
 // ============================================================
 
-export async function registerSlashCommands(client: Client, skills: SkillEntry[] = []): Promise<void> {
+export async function registerSlashCommands(client: Client, skills: readonly SkillEntry[] = []): Promise<void> {
   const token = process.env.DISCORD_BOT_TOKEN
   if (!token || !client.user) return
 
@@ -141,13 +142,13 @@ export async function registerSlashCommands(client: Client, skills: SkillEntry[]
     )
     registeredSkillNames = validSkills.map(s => s.name)
     process.stderr.write(`discord channel: registered ${allCommands.length} slash commands (${validSkills.length} skills)\n`)
-  } catch (err) {
-    process.stderr.write(`discord channel: failed to register slash commands: ${err}\n`)
+  } catch (err: unknown) {
+    process.stderr.write(`discord channel: failed to register slash commands: ${err instanceof Error ? err.message : String(err)}\n`)
   }
 }
 
 /** Re-register commands with updated skills. Only calls Discord API if skills actually changed. */
-export async function updateSkillCommands(client: Client, skills: SkillEntry[]): Promise<void> {
+export async function updateSkillCommands(client: Client, skills: readonly SkillEntry[]): Promise<void> {
   const validSkills = skills
     .filter(s => !BUILTIN_NAMES.has(s.name))
     .slice(0, MAX_SKILL_COMMANDS)
@@ -171,7 +172,7 @@ export function getRegisteredSkills(): readonly string[] {
 }
 
 /** Set registered skill names directly (for testing). */
-export function _setRegisteredSkillsForTest(names: string[]): void {
+export function _setRegisteredSkillsForTest(names: readonly string[]): void {
   registeredSkillNames = names
 }
 
@@ -180,16 +181,16 @@ export function _setRegisteredSkillsForTest(names: string[]): void {
 // ============================================================
 
 export interface SlashCommandDeps {
-  sessions: SessionManager
-  history: ProjectHistory
-  startedAt: number
+  readonly sessions: SessionManager
+  readonly history: ProjectHistory
+  readonly startedAt: number
 }
 
 // ============================================================
 // Autocomplete handlers
 // ============================================================
 
-export function handleAutocomplete(interaction: AutocompleteInteraction, deps: SlashCommandDeps): void {
+export function handleAutocomplete(interaction: AutocompleteInteraction, deps: Readonly<SlashCommandDeps>): void {
   const focused = interaction.options.getFocused(true)
   const commandName = interaction.commandName
 
@@ -232,7 +233,7 @@ export function handleAutocomplete(interaction: AutocompleteInteraction, deps: S
 
 export async function handleSlashCommand(
   interaction: ChatInputCommandInteraction,
-  deps: SlashCommandDeps,
+  deps: Readonly<SlashCommandDeps>,
 ): Promise<void> {
   switch (interaction.commandName) {
     case 'switch': return handleSwitch(interaction, deps)
@@ -253,7 +254,7 @@ export async function handleSlashCommand(
 
 async function handleSwitch(
   interaction: ChatInputCommandInteraction,
-  deps: SlashCommandDeps,
+  deps: Readonly<SlashCommandDeps>,
 ): Promise<void> {
   const sessionName = interaction.options.getString('session', true)
   const sessions = deps.sessions.getSessions()
@@ -289,7 +290,7 @@ async function handleSwitch(
 
 async function handleList(
   interaction: ChatInputCommandInteraction,
-  deps: SlashCommandDeps,
+  deps: Readonly<SlashCommandDeps>,
 ): Promise<void> {
   const sessions = deps.sessions.getSessions()
   if (sessions.length === 0) {
@@ -313,7 +314,7 @@ async function handleList(
 
 async function handleStatus(
   interaction: ChatInputCommandInteraction,
-  deps: SlashCommandDeps,
+  deps: Readonly<SlashCommandDeps>,
 ): Promise<void> {
   const sessions = deps.sessions.getSessions()
   const uptime = formatUptime(Date.now() - deps.startedAt)
@@ -331,7 +332,7 @@ async function handleStatus(
 
 async function handleKill(
   interaction: ChatInputCommandInteraction,
-  deps: SlashCommandDeps,
+  deps: Readonly<SlashCommandDeps>,
 ): Promise<void> {
   const sessionName = interaction.options.getString('session', true)
 
@@ -371,7 +372,7 @@ async function handleKill(
 
 async function handleBroadcast(
   interaction: ChatInputCommandInteraction,
-  deps: SlashCommandDeps,
+  deps: Readonly<SlashCommandDeps>,
 ): Promise<void> {
   const message = interaction.options.getString('message', true)
   const sessions = deps.sessions.getSessions()
@@ -382,7 +383,7 @@ async function handleBroadcast(
   }
 
   for (const s of sessions) {
-    deps.sessions.routeToSession(s.name, message, { type: 'broadcast' })
+    deps.sessions.routeToSession(s.name, message, { type: 'broadcast' } as ChannelMeta)
   }
 
   await interaction.reply({
@@ -393,7 +394,7 @@ async function handleBroadcast(
 
 async function handleSpawn(
   interaction: ChatInputCommandInteraction,
-  deps: SlashCommandDeps,
+  deps: Readonly<SlashCommandDeps>,
 ): Promise<void> {
   const projectPath = interaction.options.getString('project')
 
@@ -452,7 +453,7 @@ async function handleHelp(
 
 async function handleSkillInvocation(
   interaction: ChatInputCommandInteraction,
-  deps: SlashCommandDeps,
+  deps: Readonly<SlashCommandDeps>,
 ): Promise<void> {
   const skillName = interaction.commandName
   const args = interaction.options.getString('args') ?? ''
@@ -469,7 +470,7 @@ async function handleSkillInvocation(
     chat_id: interaction.channelId,
     user: interaction.user.username,
     user_id: interaction.user.id,
-  })
+  } as ChannelMeta)
 
   if (routed) {
     await interaction.reply({ content: `Running \`/${skillName}${args ? ` ${args}` : ''}\`...`, ephemeral: true })
@@ -484,7 +485,7 @@ async function handleSkillInvocation(
 
 export function spawnCad(dir: string): void {
   try {
-    const { spawn } = require('child_process')
+    const { spawn } = require('child_process') as typeof import('child_process')
     // cad is a shell alias for 'claude --dangerously-skip-permissions'
     // Use the actual binary path + the alias flags + channels
     const child = spawn('/Users/yassin/.local/bin/claude', [
@@ -497,8 +498,8 @@ export function spawnCad(dir: string): void {
     })
     child.unref()
     process.stderr.write(`discord channel: spawned claude in ${dir}\n`)
-  } catch (err) {
-    process.stderr.write(`discord channel: failed to spawn claude: ${err}\n`)
+  } catch (err: unknown) {
+    process.stderr.write(`discord channel: failed to spawn claude: ${err instanceof Error ? err.message : String(err)}\n`)
   }
 }
 

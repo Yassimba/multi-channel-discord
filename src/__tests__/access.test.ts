@@ -50,8 +50,7 @@ describe('loadAccess', () => {
 
 describe('saveAccess', () => {
   test('persists config to disk', async () => {
-    const config = defaultAccess()
-    config.allowFrom = ['myuser']
+    const config = { ...defaultAccess(), allowFrom: ['myuser'] }
     saveAccess(config, tempDir)
 
     const raw = await readFile(join(tempDir, 'access.json'), 'utf-8')

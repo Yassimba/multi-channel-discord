@@ -3,7 +3,7 @@
  * Handles registration, reply, react, rename, deregister.
  */
 
-import type { PluginToRouterMessage, WsRegistered, WsRenamed, WsError, WsToolResult, WsPermissionVerdict } from './types.js'
+import type { PluginToRouterMessage, WsRegistered, WsRenamed, WsError, WsToolResult, WsPermissionVerdict, WsAskUser, WsRegisterSkills, ChannelMeta } from './types.js'
 import type { SessionManager, ProjectHistory } from './sessions.js'
 import { chunk, assertSendable } from './discord.js'
 import { noteSent, getStateDir } from './access.js'
@@ -24,20 +24,20 @@ export interface WsData {
 }
 
 export interface WsDeps {
-  sessions: SessionManager
-  history: ProjectHistory
-  client: Client
-  chatId: () => string | null
-  chunkLimit: number
-  chunkMode: 'length' | 'newline'
-  replyToMode: 'off' | 'first' | 'all'
-  stateDir?: string
-  onReply?: (chatId: string) => void
-  onSessionChange?: () => void
-  onSkillsRegistered?: (skills: Array<{ name: string; description: string }>) => void
+  readonly sessions: SessionManager
+  readonly history: ProjectHistory
+  readonly client: Client
+  readonly chatId: () => string | null
+  readonly chunkLimit: number
+  readonly chunkMode: 'length' | 'newline'
+  readonly replyToMode: 'off' | 'first' | 'all'
+  readonly stateDir?: string
+  readonly onReply?: (chatId: string) => void
+  readonly onSessionChange?: () => void
+  readonly onSkillsRegistered?: (skills: ReadonlyArray<{ name: string; description: string }>) => void
 }
 
-interface WsLike {
+export interface WsLike {
   data: WsData
   send(msg: string): void
 }
@@ -48,101 +48,32 @@ export interface WsHandlers {
   close(ws: WsLike): void
 }
 
-export function createWsHandlers(deps: WsDeps): WsHandlers {
-  return {
-    open(_ws: WsLike) {},
+/** Fetch a text-based channel from Discord, returning null if not found or not text-based. */
+async function fetchTextChannelOrNull(client: Client, channelId: string): Promise<TextBasedChannel | null> {
+  const ch = await client.channels.fetch(channelId)
+  if (!ch || !ch.isTextBased()) return null
+  return ch as TextBasedChannel
+}
 
-    message(ws: WsLike, raw: string | Buffer) {
+export function createWsHandlers(deps: Readonly<WsDeps>): WsHandlers {
+  return {
+    open(_ws: WsLike): void {},
+
+    message(ws: WsLike, raw: string | Buffer): void {
       const text = typeof raw === 'string' ? raw : raw.toString()
 
       let parsed: PluginToRouterMessage
       try {
-        parsed = JSON.parse(text)
+        parsed = JSON.parse(text) as PluginToRouterMessage
       } catch {
         sendError(ws, 'Invalid JSON')
         return
       }
 
-      switch (parsed.type) {
-        case 'register':
-          if (!hasString(parsed, 'name') || !hasString(parsed, 'projectPath')) {
-            sendError(ws, 'register requires name and projectPath')
-            return
-          }
-          handleRegister(ws, parsed.name, parsed.projectPath, deps)
-          break
-        case 'deregister':
-          handleDeregister(ws, deps)
-          break
-        case 'rename':
-          if (!hasString(parsed, 'name')) {
-            sendError(ws, 'rename requires name')
-            return
-          }
-          handleRename(ws, parsed.name, deps)
-          break
-        case 'reply':
-          if (!hasString(parsed, 'text')) {
-            sendError(ws, 'reply requires text')
-            return
-          }
-          handleReply(ws, parsed.text, parsed.replyTo, parsed.files, deps)
-          break
-        case 'react':
-          if (!hasString(parsed, 'chatId') || !hasString(parsed, 'messageId') || !hasString(parsed, 'emoji')) {
-            sendError(ws, 'react requires chatId, messageId, and emoji')
-            return
-          }
-          handleReact(parsed.chatId, parsed.messageId, parsed.emoji, deps)
-          break
-        case 'editMessage':
-          if (!hasString(parsed, 'requestId') || !hasString(parsed, 'chatId') || !hasString(parsed, 'messageId') || !hasString(parsed, 'text')) {
-            sendError(ws, 'editMessage requires requestId, chatId, messageId, and text')
-            return
-          }
-          handleEditMessage(ws, parsed.requestId, parsed.chatId, parsed.messageId, parsed.text, deps)
-          break
-        case 'downloadAttachment':
-          if (!hasString(parsed, 'requestId') || !hasString(parsed, 'chatId') || !hasString(parsed, 'messageId')) {
-            sendError(ws, 'downloadAttachment requires requestId, chatId, and messageId')
-            return
-          }
-          handleDownloadAttachment(ws, parsed.requestId, parsed.chatId, parsed.messageId, deps)
-          break
-        case 'fetchMessages':
-          if (!hasString(parsed, 'requestId') || !hasString(parsed, 'channel')) {
-            sendError(ws, 'fetchMessages requires requestId and channel')
-            return
-          }
-          handleFetchMessages(ws, parsed.requestId, parsed.channel, (parsed as { limit?: number }).limit, deps)
-          break
-        case 'askUser':
-          if (!hasString(parsed, 'requestId') || !hasString(parsed, 'chatId') || !hasString(parsed, 'question')) {
-            sendError(ws, 'askUser requires requestId, chatId, and question')
-            return
-          }
-          handleAskUser(ws, parsed.requestId, parsed.chatId, parsed.question, (parsed as any).options ?? [], deps)
-          break
-        case 'permissionRequest':
-          if (!hasString(parsed, 'requestId') || !hasString(parsed, 'toolName') || !hasString(parsed, 'description') || !hasString(parsed, 'inputPreview')) {
-            sendError(ws, 'permissionRequest requires requestId, toolName, description, and inputPreview')
-            return
-          }
-          handlePermissionRequest(ws, parsed.requestId, parsed.toolName, parsed.description, parsed.inputPreview, deps)
-          break
-        case 'registerSkills':
-          if (!Array.isArray((parsed as any).skills)) {
-            sendError(ws, 'registerSkills requires skills array')
-            return
-          }
-          deps.onSkillsRegistered?.((parsed as any).skills)
-          break
-        default:
-          sendError(ws, `Unknown message type: ${(parsed as { type: string }).type}`)
-      }
+      dispatchMessage(ws, parsed, deps)
     },
 
-    close(ws: WsLike) {
+    close(ws: WsLike): void {
       if (ws.data.sessionName) {
         try {
           deps.sessions.deregisterSession(ws.data.sessionName)
@@ -154,7 +85,87 @@ export function createWsHandlers(deps: WsDeps): WsHandlers {
   }
 }
 
-function handleRegister(ws: WsLike, name: string, projectPath: string, deps: WsDeps): void {
+function dispatchMessage(ws: WsLike, parsed: PluginToRouterMessage, deps: Readonly<WsDeps>): void {
+  switch (parsed.type) {
+    case 'register':
+      if (!hasString(parsed, 'name') || !hasString(parsed, 'projectPath')) {
+        sendError(ws, 'register requires name and projectPath')
+        return
+      }
+      handleRegister(ws, parsed.name, parsed.projectPath, deps)
+      break
+    case 'deregister':
+      handleDeregister(ws, deps)
+      break
+    case 'rename':
+      if (!hasString(parsed, 'name')) {
+        sendError(ws, 'rename requires name')
+        return
+      }
+      handleRename(ws, parsed.name, deps)
+      break
+    case 'reply':
+      if (!hasString(parsed, 'text')) {
+        sendError(ws, 'reply requires text')
+        return
+      }
+      handleReply(ws, parsed.text, parsed.replyTo, parsed.files ? [...parsed.files] : undefined, deps)
+      break
+    case 'react':
+      if (!hasString(parsed, 'chatId') || !hasString(parsed, 'messageId') || !hasString(parsed, 'emoji')) {
+        sendError(ws, 'react requires chatId, messageId, and emoji')
+        return
+      }
+      handleReact(parsed.chatId, parsed.messageId, parsed.emoji, deps)
+      break
+    case 'editMessage':
+      if (!hasString(parsed, 'requestId') || !hasString(parsed, 'chatId') || !hasString(parsed, 'messageId') || !hasString(parsed, 'text')) {
+        sendError(ws, 'editMessage requires requestId, chatId, messageId, and text')
+        return
+      }
+      handleEditMessage(ws, parsed.requestId, parsed.chatId, parsed.messageId, parsed.text, deps)
+      break
+    case 'downloadAttachment':
+      if (!hasString(parsed, 'requestId') || !hasString(parsed, 'chatId') || !hasString(parsed, 'messageId')) {
+        sendError(ws, 'downloadAttachment requires requestId, chatId, and messageId')
+        return
+      }
+      handleDownloadAttachment(ws, parsed.requestId, parsed.chatId, parsed.messageId, deps)
+      break
+    case 'fetchMessages':
+      if (!hasString(parsed, 'requestId') || !hasString(parsed, 'channel')) {
+        sendError(ws, 'fetchMessages requires requestId and channel')
+        return
+      }
+      handleFetchMessages(ws, parsed.requestId, parsed.channel, parsed.limit, deps)
+      break
+    case 'askUser':
+      if (!hasString(parsed, 'requestId') || !hasString(parsed, 'chatId') || !hasString(parsed, 'question')) {
+        sendError(ws, 'askUser requires requestId, chatId, and question')
+        return
+      }
+      handleAskUser(ws, parsed.requestId, parsed.chatId, parsed.question, parsed.options ?? [], deps)
+      break
+    case 'permissionRequest':
+      if (!hasString(parsed, 'requestId') || !hasString(parsed, 'toolName') || !hasString(parsed, 'description') || !hasString(parsed, 'inputPreview')) {
+        sendError(ws, 'permissionRequest requires requestId, toolName, description, and inputPreview')
+        return
+      }
+      handlePermissionRequest(ws, parsed.requestId, parsed.toolName, parsed.description, parsed.inputPreview, deps)
+      break
+    case 'registerSkills':
+      if (!Array.isArray(parsed.skills)) {
+        sendError(ws, 'registerSkills requires skills array')
+        return
+      }
+      deps.onSkillsRegistered?.(parsed.skills)
+      break
+    default:
+      sendError(ws, `Unknown message type: ${(parsed as { type: string }).type}`)
+  }
+}
+
+function handleRegister(ws: WsLike, name: string, projectPath: string, deps: Readonly<WsDeps>): void {
   const actualName = deps.sessions.registerSession(
     (msg: string) => ws.send(msg),
     name,
@@ -168,7 +179,7 @@ function handleRegister(ws: WsLike, name: string, projectPath: string, deps: WsD
   deps.onSessionChange?.()
 }
 
-function handleDeregister(ws: WsLike, deps: WsDeps): void {
+function handleDeregister(ws: WsLike, deps: Readonly<WsDeps>): void {
   if (ws.data.sessionName) {
     try {
       deps.sessions.deregisterSession(ws.data.sessionName)
@@ -178,7 +189,7 @@ function handleDeregister(ws: WsLike, deps: WsDeps): void {
   }
 }
 
-function handleRename(ws: WsLike, newName: string, deps: WsDeps): void {
+function handleRename(ws: WsLike, newName: string, deps: Readonly<WsDeps>): void {
   const oldName = ws.data.sessionName
   if (!oldName) {
     sendError(ws, 'Cannot rename: not registered')
@@ -191,7 +202,7 @@ function handleRename(ws: WsLike, newName: string, deps: WsDeps): void {
   ws.send(JSON.stringify(response))
 }
 
-function handleReply(ws: WsLike, text: string, replyTo: string | undefined, files: string[] | undefined, deps: WsDeps): void {
+function handleReply(ws: WsLike, text: string, replyTo: string | undefined, files: string[] | undefined, deps: Readonly<WsDeps>): void {
   const sessionName = ws.data.sessionName
   if (!sessionName) {
     sendError(ws, 'Cannot reply: not registered')
@@ -222,20 +233,22 @@ function handleReply(ws: WsLike, text: string, replyTo: string | undefined, file
   deps.onReply?.(chatId)
 }
 
-function handleReact(chatId: string, messageId: string, emoji: string, deps: WsDeps): void {
+function handleReact(chatId: string, messageId: string, emoji: string, deps: Readonly<WsDeps>): void {
+  // Fire-and-forget: react asynchronously without blocking the WS message handler
   void (async () => {
     try {
-      const ch = await deps.client.channels.fetch(chatId)
-      if (!ch || !ch.isTextBased()) return
-      const msg = await (ch as TextBasedChannel).messages.fetch(messageId)
+      const ch = await fetchTextChannelOrNull(deps.client, chatId)
+      if (!ch) return
+      const msg = await ch.messages.fetch(messageId)
       await msg.react(emoji)
-    } catch (err) {
-      process.stderr.write(`discord: react failed: ${err}\n`)
+    } catch (err: unknown) {
+      process.stderr.write(`discord: react failed: ${err instanceof Error ? err.message : String(err)}\n`)
     }
   })()
 }
 
-function sendToDiscord(client: Client, chatId: string, text: string, replyTo?: string, files?: string[]): void {
+function sendToDiscord(client: Client, chatId: string, text: string, replyTo?: string, files?: readonly string[]): void {
+  // Fire-and-forget: send to Discord asynchronously without blocking the caller
   void (async () => {
     try {
       const ch = await client.channels.fetch(chatId)
@@ -258,42 +271,44 @@ function sendToDiscord(client: Client, chatId: string, text: string, replyTo?: s
         ...(replyTo ? { reply: { messageReference: replyTo, failIfNotExists: false } } : {}),
       })
       noteSent(sent.id)
-    } catch (err) {
-      process.stderr.write(`discord: send failed: ${err}\n`)
+    } catch (err: unknown) {
+      process.stderr.write(`discord: send failed: ${err instanceof Error ? err.message : String(err)}\n`)
     }
   })()
 }
 
-function handleEditMessage(ws: WsLike, requestId: string, chatId: string, messageId: string, text: string, deps: WsDeps): void {
+function handleEditMessage(ws: WsLike, requestId: string, chatId: string, messageId: string, text: string, deps: Readonly<WsDeps>): void {
+  // Fire-and-forget: edit message asynchronously and report result via WS tool result
   void (async () => {
     try {
-      const ch = await deps.client.channels.fetch(chatId)
-      if (!ch || !ch.isTextBased()) {
+      const ch = await fetchTextChannelOrNull(deps.client, chatId)
+      if (!ch) {
         sendToolResult(ws, requestId, false, 'Channel not found or not text-based')
         return
       }
-      const msg = await (ch as TextBasedChannel).messages.fetch(messageId)
+      const msg = await ch.messages.fetch(messageId)
       if (msg.author.id !== deps.client.user?.id) {
         sendToolResult(ws, requestId, false, 'Cannot edit messages from other users')
         return
       }
       await msg.edit(text)
       sendToolResult(ws, requestId, true, 'Message edited')
-    } catch (err) {
-      sendToolResult(ws, requestId, false, `Edit failed: ${err}`)
+    } catch (err: unknown) {
+      sendToolResult(ws, requestId, false, `Edit failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   })()
 }
 
-function handleDownloadAttachment(ws: WsLike, requestId: string, chatId: string, messageId: string, deps: WsDeps): void {
+function handleDownloadAttachment(ws: WsLike, requestId: string, chatId: string, messageId: string, deps: Readonly<WsDeps>): void {
+  // Fire-and-forget: download attachments asynchronously and report result via WS tool result
   void (async () => {
     try {
-      const ch = await deps.client.channels.fetch(chatId)
-      if (!ch || !ch.isTextBased()) {
+      const ch = await fetchTextChannelOrNull(deps.client, chatId)
+      if (!ch) {
         sendToolResult(ws, requestId, false, 'Channel not found or not text-based')
         return
       }
-      const msg = await (ch as TextBasedChannel).messages.fetch(messageId)
+      const msg = await ch.messages.fetch(messageId)
       if (msg.attachments.size === 0) {
         sendToolResult(ws, requestId, false, 'No attachments on this message')
         return
@@ -315,21 +330,22 @@ function handleDownloadAttachment(ws: WsLike, requestId: string, chatId: string,
       }
 
       sendToolResult(ws, requestId, true, JSON.stringify(paths))
-    } catch (err) {
-      sendToolResult(ws, requestId, false, `Download failed: ${err}`)
+    } catch (err: unknown) {
+      sendToolResult(ws, requestId, false, `Download failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   })()
 }
 
-function handleFetchMessages(ws: WsLike, requestId: string, channelId: string, limit: number | undefined, deps: WsDeps): void {
+function handleFetchMessages(ws: WsLike, requestId: string, channelId: string, limit: number | undefined, deps: Readonly<WsDeps>): void {
+  // Fire-and-forget: fetch messages asynchronously and report result via WS tool result
   void (async () => {
     try {
-      const ch = await deps.client.channels.fetch(channelId)
-      if (!ch || !ch.isTextBased()) {
+      const ch = await fetchTextChannelOrNull(deps.client, channelId)
+      if (!ch) {
         sendToolResult(ws, requestId, false, 'Channel not found or not text-based')
         return
       }
-      const messages = await (ch as TextBasedChannel).messages.fetch({ limit: Math.min(limit ?? 20, 100) })
+      const messages = await ch.messages.fetch({ limit: Math.min(limit ?? 20, 100) })
       const result = messages.map(m => ({
         id: m.id,
         author: m.author.username,
@@ -338,8 +354,8 @@ function handleFetchMessages(ws: WsLike, requestId: string, channelId: string, l
         attachments: m.attachments.map(a => ({ name: a.name, url: a.url, size: a.size })),
       }))
       sendToolResult(ws, requestId, true, JSON.stringify(result))
-    } catch (err) {
-      sendToolResult(ws, requestId, false, `Fetch failed: ${err}`)
+    } catch (err: unknown) {
+      sendToolResult(ws, requestId, false, `Fetch failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   })()
 }
@@ -349,9 +365,10 @@ function handleAskUser(
   requestId: string,
   chatId: string,
   question: string,
-  options: Array<{ label: string; description?: string; value: string }>,
-  deps: WsDeps,
+  options: WsAskUser['options'],
+  deps: Readonly<WsDeps>,
 ): void {
+  // Fire-and-forget: ask user asynchronously via Discord components and report result via WS tool result
   void (async () => {
     try {
       const ch = await deps.client.channels.fetch(chatId)
@@ -363,98 +380,115 @@ function handleAskUser(
       const sessionName = ws.data.sessionName ?? 'unknown'
 
       if (options.length <= 5) {
-        // Use buttons for 2-5 options (cleaner UX)
-        const row = new ActionRowBuilder<ButtonBuilder>()
-        for (const opt of options) {
-          row.addComponents(
-            new ButtonBuilder()
-              .setCustomId(`ask_${requestId}_${opt.value}`)
-              .setLabel(opt.label.slice(0, 80))
-              .setStyle(ButtonStyle.Primary),
-          )
-        }
-
-        const sent = await ch.send({
-          content: `**[${sessionName}]** ${question}`,
-          components: [row],
-        })
-        noteSent(sent.id)
-
-        // Wait for button click (5 min timeout)
-        try {
-          const interaction = await sent.awaitMessageComponent({
-            componentType: ComponentType.Button,
-            time: 300_000,
-          })
-
-          // Find the selected option
-          const selectedValue = interaction.customId.replace(`ask_${requestId}_`, '')
-          const selectedOption = options.find(o => o.value === selectedValue)
-
-          await interaction.update({
-            content: `**[${sessionName}]** ${question}\n\n> Selected: **${selectedOption?.label ?? selectedValue}**`,
-            components: [],
-          })
-
-          sendToolResult(ws, requestId, true, JSON.stringify({
-            value: selectedValue,
-            label: selectedOption?.label ?? selectedValue,
-          }))
-        } catch {
-          // Timeout — disable buttons
-          await sent.edit({ content: `**[${sessionName}]** ${question}\n\n> *(timed out)*`, components: [] }).catch(() => {})
-          sendToolResult(ws, requestId, false, 'Selection timed out (5 min)')
-        }
+        await askWithButtons(ch, ws, requestId, sessionName, question, options)
       } else {
-        // Use select menu for 6+ options
-        const select = new StringSelectMenuBuilder()
-          .setCustomId(`ask_${requestId}`)
-          .setPlaceholder('Choose an option...')
-
-        for (const opt of options.slice(0, 25)) {
-          select.addOptions({
-            label: opt.label.slice(0, 100),
-            description: opt.description?.slice(0, 100),
-            value: opt.value.slice(0, 100),
-          })
-        }
-
-        const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)
-
-        const sent = await ch.send({
-          content: `**[${sessionName}]** ${question}`,
-          components: [row],
-        })
-        noteSent(sent.id)
-
-        // Wait for selection (5 min timeout)
-        try {
-          const interaction = await sent.awaitMessageComponent({
-            componentType: ComponentType.StringSelect,
-            time: 300_000,
-          })
-
-          const selectedValue = interaction.values[0]
-          const selectedOption = options.find(o => o.value === selectedValue)
-
-          await interaction.update({
-            content: `**[${sessionName}]** ${question}\n\n> Selected: **${selectedOption?.label ?? selectedValue}**`,
-            components: [],
-          })
-
-          sendToolResult(ws, requestId, true, JSON.stringify({
-            value: selectedValue,
-            label: selectedOption?.label ?? selectedValue,
-          }))
-        } catch {
-          await sent.edit({ content: `**[${sessionName}]** ${question}\n\n> *(timed out)*`, components: [] }).catch(() => {})
-          sendToolResult(ws, requestId, false, 'Selection timed out (5 min)')
-        }
+        await askWithSelectMenu(ch, ws, requestId, sessionName, question, options)
       }
-    } catch (err) {
-      sendToolResult(ws, requestId, false, `Ask failed: ${err}`)
+    } catch (err: unknown) {
+      sendToolResult(ws, requestId, false, `Ask failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   })()
+}
+
+async function askWithButtons(
+  ch: { send: Function },
+  ws: WsLike,
+  requestId: string,
+  sessionName: string,
+  question: string,
+  options: WsAskUser['options'],
+): Promise<void> {
+  const row = new ActionRowBuilder<ButtonBuilder>()
+  for (const opt of options) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`ask_${requestId}_${opt.value}`)
+        .setLabel(opt.label.slice(0, 80))
+        .setStyle(ButtonStyle.Primary),
+    )
+  }
+
+  const sent = await (ch as unknown as { send(opts: unknown): Promise<{ id: string; awaitMessageComponent(opts: unknown): Promise<{ customId: string; update(opts: unknown): Promise<void> }>; edit(opts: unknown): Promise<void> }> }).send({
+    content: `**[${sessionName}]** ${question}`,
+    components: [row],
+  })
+  noteSent(sent.id)
+
+  try {
+    const interaction = await sent.awaitMessageComponent({
+      componentType: ComponentType.Button,
+      time: 300_000,
+    })
+
+    const selectedValue = interaction.customId.replace(`ask_${requestId}_`, '')
+    const selectedOption = options.find(o => o.value === selectedValue)
+
+    await interaction.update({
+      content: `**[${sessionName}]** ${question}\n\n> Selected: **${selectedOption?.label ?? selectedValue}**`,
+      components: [],
+    })
+
+    sendToolResult(ws, requestId, true, JSON.stringify({
+      value: selectedValue,
+      label: selectedOption?.label ?? selectedValue,
+    }))
+  } catch {
+    // Timeout -- disable buttons
+    await sent.edit({ content: `**[${sessionName}]** ${question}\n\n> *(timed out)*`, components: [] }).catch(() => {})
+    sendToolResult(ws, requestId, false, 'Selection timed out (5 min)')
+  }
+}
+
+async function askWithSelectMenu(
+  ch: { send: Function },
+  ws: WsLike,
+  requestId: string,
+  sessionName: string,
+  question: string,
+  options: WsAskUser['options'],
+): Promise<void> {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`ask_${requestId}`)
+    .setPlaceholder('Choose an option...')
+
+  for (const opt of options.slice(0, 25)) {
+    select.addOptions({
+      label: opt.label.slice(0, 100),
+      description: opt.description?.slice(0, 100),
+      value: opt.value.slice(0, 100),
+    })
+  }
+
+  const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)
+
+  const sent = await (ch as unknown as { send(opts: unknown): Promise<{ id: string; awaitMessageComponent(opts: unknown): Promise<{ values: string[]; update(opts: unknown): Promise<void> }>; edit(opts: unknown): Promise<void> }> }).send({
+    content: `**[${sessionName}]** ${question}`,
+    components: [row],
+  })
+  noteSent(sent.id)
+
+  try {
+    const interaction = await sent.awaitMessageComponent({
+      componentType: ComponentType.StringSelect,
+      time: 300_000,
+    })
+
+    const selectedValue = interaction.values[0]
+    const selectedOption = options.find(o => o.value === selectedValue)
+
+    await interaction.update({
+      content: `**[${sessionName}]** ${question}\n\n> Selected: **${selectedOption?.label ?? selectedValue}**`,
+      components: [],
+    })
+
+    sendToolResult(ws, requestId, true, JSON.stringify({
+      value: selectedValue,
+      label: selectedOption?.label ?? selectedValue,
+    }))
+  } catch {
+    await sent.edit({ content: `**[${sessionName}]** ${question}\n\n> *(timed out)*`, components: [] }).catch(() => {})
+    sendToolResult(ws, requestId, false, 'Selection timed out (5 min)')
+  }
 }
 
 /** Map of permission request ID → WS connection that sent it, so we can route verdicts back. */
@@ -466,7 +500,7 @@ function handlePermissionRequest(
   toolName: string,
   description: string,
   inputPreview: string,
-  deps: WsDeps,
+  deps: Readonly<WsDeps>,
 ): void {
   const chatId = deps.chatId()
   if (!chatId) return
@@ -476,6 +510,7 @@ function handlePermissionRequest(
   // Store the WS so we can route the verdict back
   permissionSessions.set(requestId, ws)
 
+  // Fire-and-forget: send permission prompt to Discord asynchronously
   void (async () => {
     try {
       const ch = await deps.client.channels.fetch(chatId)
@@ -505,8 +540,8 @@ function handlePermissionRequest(
 
       const sent = await ch.send({ content, components: [row] })
       noteSent(sent.id)
-    } catch (err) {
-      process.stderr.write(`discord: permission request send failed: ${err}\n`)
+    } catch (err: unknown) {
+      process.stderr.write(`discord: permission request send failed: ${err instanceof Error ? err.message : String(err)}\n`)
       permissionSessions.delete(requestId)
     }
   })()
@@ -534,7 +569,8 @@ function sendToolResult(ws: WsLike, requestId: string, success: boolean, data: s
   ws.send(JSON.stringify(response))
 }
 
-function hasString(obj: unknown, key: string): boolean {
+/** Type guard: checks that `obj[key]` exists and is a string. */
+function hasString<K extends string>(obj: unknown, key: K): obj is Record<K, string> {
   return typeof obj === 'object' && obj !== null && typeof (obj as Record<string, unknown>)[key] === 'string'
 }
 

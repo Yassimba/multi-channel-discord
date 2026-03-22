@@ -1,4 +1,4 @@
-const MAX_BACKOFF_MS = 30_000
+const MAX_BACKOFF_MS = 30_000 as const
 
 /** Compute exponential backoff delay for a given attempt (0-indexed). */
 export function computeBackoff(attempt: number): number {

@@ -8,16 +8,16 @@ import { basename } from 'node:path'
 import { spawn } from 'node:child_process'
 
 export interface NamingContext {
-  gitBranch?: string
-  packageName?: string
-  dirName: string
+  readonly gitBranch?: string
+  readonly packageName?: string
+  readonly dirName: string
 }
 
 const GENERIC_BRANCHES = new Set(['main', 'master', 'develop', 'HEAD'])
 
 /** Read naming context from the project directory. */
 export async function readNamingContext(cwd: string): Promise<NamingContext> {
-  const ctx: NamingContext = { dirName: basename(cwd) }
+  const ctx: { gitBranch?: string; packageName?: string; dirName: string } = { dirName: basename(cwd) }
 
   // Try git branch
   try {
@@ -35,7 +35,7 @@ export async function readNamingContext(cwd: string): Promise<NamingContext> {
 
   // Try package.json name
   try {
-    const pkg = JSON.parse(await readFile(`${cwd}/package.json`, 'utf-8'))
+    const pkg = JSON.parse(await readFile(`${cwd}/package.json`, 'utf-8')) as { name?: string }
     if (typeof pkg.name === 'string' && pkg.name) {
       ctx.packageName = pkg.name
     }
@@ -45,7 +45,7 @@ export async function readNamingContext(cwd: string): Promise<NamingContext> {
 }
 
 /** Pick the best session name from the context. */
-export function pickSessionName(ctx: NamingContext): string {
+export function pickSessionName(ctx: Readonly<NamingContext>): string {
   if (ctx.gitBranch) return ctx.gitBranch
   if (ctx.packageName) return ctx.packageName
   return ctx.dirName

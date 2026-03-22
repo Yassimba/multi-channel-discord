@@ -47,7 +47,7 @@ export async function fetchTextChannel(client: Client, id: string): Promise<Text
 // Text chunking (Discord 2000 char limit)
 // ============================================================
 
-export function chunk(text: string, limit: number, mode: 'length' | 'newline'): string[] {
+export function chunk(text: string, limit: number, mode: 'length' | 'newline'): readonly string[] {
   const cap = Math.max(1, Math.min(limit, MAX_CHUNK_LIMIT))
   if (text.length <= cap) return [text]
 
