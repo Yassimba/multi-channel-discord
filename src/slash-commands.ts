@@ -343,17 +343,20 @@ async function handleSpawn(
 export function spawnCad(dir: string): void {
   try {
     const { spawn } = require('child_process')
-    const child = spawn('cad', ['--channels', 'plugin:discord@claude-plugins-official'], {
+    // cad is a shell alias for 'claude --dangerously-skip-permissions'
+    // Use the actual binary path + the alias flags + channels
+    const child = spawn('/Users/yassin/.local/bin/claude', [
+      '--dangerously-skip-permissions',
+      '--channels', 'plugin:discord@claude-plugins-official',
+    ], {
       cwd: dir,
       detached: true,
       stdio: 'ignore',
-      env: { ...process.env },
-      shell: true,
     })
     child.unref()
-    process.stderr.write(`discord channel: spawned cad in ${dir}\n`)
+    process.stderr.write(`discord channel: spawned claude in ${dir}\n`)
   } catch (err) {
-    process.stderr.write(`discord channel: failed to spawn cad: ${err}\n`)
+    process.stderr.write(`discord channel: failed to spawn claude: ${err}\n`)
   }
 }
 
