@@ -50,21 +50,16 @@ In Claude Code:
 /plugin install discord@multi-channel-discord
 ```
 
-### Configure the token
+### Configure and start
+
+All from Claude Code — no terminal needed:
 
 ```
 /discord:configure <your-bot-token>
+/discord:start-router
 ```
 
-### Start the router
-
-The router is the Discord bot. Run it in a terminal you'll leave open:
-
-```bash
-bunx multi-channel-discord
-```
-
-Or from Claude Code: `/discord:start-router`
+The router runs in the background. You can also start it manually with `bunx multi-channel-discord` if you prefer a dedicated terminal.
 
 ### Launch Claude Code
 
